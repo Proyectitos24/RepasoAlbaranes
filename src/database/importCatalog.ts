@@ -1,38 +1,41 @@
 // src/database/importCatalog.ts
 import { openDatabaseAsync } from 'expo-sqlite';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system/legacy'; // ✅ IMPORTANTE en SDK 54
+import * as FileSystem from 'expo-file-system/legacy';
 import { getDb } from './db';
 
 type RowCatalogo = {
   item_id: number;
   nombre: string;
-  ean: string | number | null;
+  ean: string;
 };
 
-function limpiarEan(raw: unknown): string {
-  return String(raw ?? '').replace(/['"]/g, '').trim();
+export type ImportProgress =
+  | { step: 'picker' }
+  | { step: 'mkdir'; path: string }
+  | { step: 'copy'; to: string }
+  | { step: 'tables' }
+  | { step: 'select' }
+  | { step: 'insert'; current: number; total: number };
+
+type ImportResult =
+  | { ok: true; count: number }
+  | { ok: false; reason: 'canceled' | 'no_uri' | 'missing_tables'; tables?: string[] };
+
+function baseDir(): string {
+  // legacy normalmente NO es null en Expo Go
+  const dir = FileSystem.documentDirectory ?? FileSystem.cacheDirectory;
+  if (!dir) throw new Error('No hay documentDirectory/cacheDirectory (¿web?). Usa Android/iOS con Expo Go.');
+  return dir;
 }
 
-// Calcula dígito de control EAN-13 a partir de 12 dígitos
-function completarEAN13(ean: string): string {
-  if (/^\d{13}$/.test(ean)) return ean;
-  if (!/^\d{12}$/.test(ean)) return ean;
-
-  let sum = 0;
-  // Pesos: pos 1,3,5... = 1 ; pos 2,4,6... = 3 (desde la izquierda)
-  for (let i = 0; i < 12; i++) {
-    const d = Number(ean[i]);
-    const weight = i % 2 === 0 ? 1 : 3;
-    sum += d * weight;
-  }
-  const check = (10 - (sum % 10)) % 10;
-  return ean + String(check);
-}
-
-export async function importarCatalogoDesdeArchivo() {
+export async function importarCatalogoDesdeArchivo(
+  onProgress?: (p: ImportProgress) => void
+): Promise<ImportResult> {
   try {
     console.log('📁 STEP=picker: abriendo selector...');
+    onProgress?.({ step: 'picker' });
+
     const result = await DocumentPicker.getDocumentAsync({
       type: '*/*',
       copyToCacheDirectory: true,
@@ -40,45 +43,40 @@ export async function importarCatalogoDesdeArchivo() {
 
     if (result.canceled) {
       console.log('⏹️ cancelado');
-      return { ok: false as const, reason: 'canceled' as const };
+      return { ok: false, reason: 'canceled' };
     }
 
     const asset = result.assets?.[0];
     const originalUri = asset?.uri;
-    if (!originalUri) {
-      console.log('❌ no uri');
-      return { ok: false as const, reason: 'no_uri' as const };
-    }
+    if (!originalUri) return { ok: false, reason: 'no_uri' };
 
-    const sqliteDir = (FileSystem.documentDirectory ?? '') + 'SQLite/';
-    if (!sqliteDir || !sqliteDir.startsWith('file://')) {
-      throw new Error('No hay documentDirectory (¿no estás en Android/iOS con Expo Go?).');
-    }
+    console.log('📄 Archivo:', asset?.name, originalUri);
 
+    const sqliteDir = baseDir() + 'SQLite/';
     const destinoUri = sqliteDir + 'catalog.db';
 
-    console.log('📄 Archivo:', asset?.name ?? 'catalog.db', originalUri);
     console.log('📁 STEP=mkdir:', sqliteDir);
+    onProgress?.({ step: 'mkdir', path: sqliteDir });
     await FileSystem.makeDirectoryAsync(sqliteDir, { intermediates: true });
 
-    const old = await FileSystem.getInfoAsync(destinoUri);
-    if (old.exists) {
+    const exists = await FileSystem.getInfoAsync(destinoUri);
+    if (exists.exists) {
       console.log('🧹 borrando catalog.db anterior...');
       await FileSystem.deleteAsync(destinoUri, { idempotent: true });
     }
 
     console.log('📥 STEP=copy ->', destinoUri);
+    onProgress?.({ step: 'copy', to: destinoUri });
     await FileSystem.copyAsync({ from: originalUri, to: destinoUri });
 
-    const copied = await FileSystem.getInfoAsync(destinoUri);
-    console.log('📦 Copiado exists=', copied.exists, 'uri=', copied.uri);
-    if (!copied.exists) throw new Error('La copia no se realizó.');
+    const info = await FileSystem.getInfoAsync(destinoUri);
+    console.log('📦 Copiado exists=', info.exists, 'uri=', info.uri);
 
-    // ✅ Abre el DB externo (Expo SQLite busca en documentDirectory/SQLite por nombre)
     console.log('📂 STEP=open ext db: catalog.db');
     const externalDB = await openDatabaseAsync('catalog.db');
 
     console.log('🔎 STEP=tables');
+    onProgress?.({ step: 'tables' });
     const tables = await externalDB.getAllAsync<{ name: string }>(
       `SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;`
     );
@@ -86,10 +84,11 @@ export async function importarCatalogoDesdeArchivo() {
     console.log('📋 Tablas (primeras 25):', nombres.slice(0, 25));
 
     if (!nombres.includes('Item') || !nombres.includes('ItemEAN')) {
-      return { ok: false as const, reason: 'missing_tables' as const, tables: nombres };
+      return { ok: false, reason: 'missing_tables', tables: nombres };
     }
 
     console.log('🔍 STEP=select');
+    onProgress?.({ step: 'select' });
     const filas = await externalDB.getAllAsync<RowCatalogo>(`
       SELECT
         Item.ItemID AS item_id,
@@ -101,31 +100,39 @@ export async function importarCatalogoDesdeArchivo() {
 
     console.log('✅ Filas obtenidas:', filas.length);
 
+    console.log('💾 STEP=insert local');
     const localDb = await getDb();
 
-    console.log('💾 STEP=insert local');
     await localDb.execAsync('BEGIN');
     try {
       await localDb.execAsync('DELETE FROM productos;');
 
       const insertSql = `INSERT INTO productos (item_id, nombre, ean) VALUES (?, ?, ?)`;
+      const total = filas.length;
 
+      let i = 0;
       for (const it of filas) {
-        const eanBase = limpiarEan(it.ean);
-        const eanFinal = completarEAN13(eanBase); // ✅ aquí se “agrega” el último dígito si faltaba
-        await localDb.runAsync(insertSql, [it.item_id, it.nombre ?? '', eanFinal]);
+        const eanTexto = String(it.ean).replace(/['"]/g, '').trim();
+        await localDb.runAsync(insertSql, [it.item_id, it.nombre, eanTexto]);
+
+        i++;
+        // actualiza UI cada 500 (ajústalo si quieres)
+        if (i % 500 === 0) {
+          onProgress?.({ step: 'insert', current: i, total });
+          await new Promise(r => setTimeout(r, 0)); // deja respirar a la UI
+        }
       }
 
+      onProgress?.({ step: 'insert', current: total, total });
+
       await localDb.execAsync('COMMIT');
+      return { ok: true, count: total };
     } catch (e) {
       await localDb.execAsync('ROLLBACK');
       throw e;
     }
-
-    console.log('✅ Importación completada.');
-    return { ok: true as const, count: filas.length };
-  } catch (e: any) {
+  } catch (e) {
     console.error('❌ Error en importarCatalogoDesdeArchivo:', e);
-    return { ok: false as const, reason: 'error' as const, message: String(e?.message ?? e) };
+    throw e;
   }
 }
