@@ -3,6 +3,8 @@ import { openDatabaseAsync } from 'expo-sqlite';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { getDb } from './db';
+import { crearTablaProductos } from './setup';
+
 
 type RowCatalogo = {
   item_id: number;
@@ -123,6 +125,7 @@ export async function importarCatalogoDesdeArchivo() {
 
     let stmt: any = null;
     try {
+      await crearTablaProductos();
       await localDb.execAsync('DELETE FROM productos;');
       await localDb.execAsync(`DELETE FROM sqlite_sequence WHERE name='productos';`);
 
