@@ -1,7 +1,7 @@
 // src/database/importCatalog.ts
 import { openDatabaseAsync } from 'expo-sqlite';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system/legacy'; // o 'expo-file-system/legacy' si tú lo usas así
+import * as FileSystem from 'expo-file-system/legacy';
 import { getDb } from './db';
 
 type RowCatalogo = {
@@ -11,34 +11,31 @@ type RowCatalogo = {
 };
 
 function baseDir(): string {
-  // Workaround types: en runtime existe en Android/iOS
   const fs = FileSystem as unknown as {
     documentDirectory?: string | null;
     cacheDirectory?: string | null;
   };
 
   const dir = fs.documentDirectory ?? fs.cacheDirectory;
-  if (!dir) throw new Error('No hay documentDirectory/cacheDirectory (¿web?). Usa Android/iOS.');
+  if (!dir) throw new Error('No hay documentDirectory/cacheDirectory. Usa Android/iOS con Expo Go.');
   return dir;
 }
 
-// ✅ Si viene 12 -> calcula check digit y lo vuelve 13
-export function completarEAN13(raw: string): string {
-  const digits = String(raw).replace(/\D/g, '');
-
+// ✅ Si viene 12 -> calcula dígito verificador y lo vuelve 13
+function completarEAN13(raw: string): string {
+  const digits = String(raw ?? '').replace(/\D/g, '');
   if (/^\d{13}$/.test(digits)) return digits;
 
   if (/^\d{12}$/.test(digits)) {
     let sum = 0;
     for (let i = 0; i < 12; i++) {
       const d = Number(digits[i]);
-      sum += d * (i % 2 === 0 ? 1 : 3); // pos 1,3,5.. x1 ; pos 2,4,6.. x3
+      sum += d * (i % 2 === 0 ? 1 : 3);
     }
     const check = (10 - (sum % 10)) % 10;
     return digits + String(check);
   }
 
-  // fallback (si viniera raro)
   return digits;
 }
 
@@ -104,35 +101,70 @@ export async function importarCatalogoDesdeArchivo() {
       SELECT
         Item.ItemID AS item_id,
         Item.LoyaltyDescription AS nombre,
-        ItemEAN.EAN AS ean
+        CAST(ItemEAN.EAN AS TEXT) AS ean
       FROM Item
       JOIN ItemEAN ON Item.ItemID = ItemEAN.ItemID;
     `);
 
     console.log('✅ Filas obtenidas:', filas.length);
 
-    console.log('💾 STEP=insert local');
+    console.log('💾 STEP=insert local (rápido)');
     const localDb = await getDb();
 
+    // ⚡ Acelera import (data se puede reimportar si algo pasa)
+    await localDb.execAsync(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
+      PRAGMA temp_store = MEMORY;
+      PRAGMA foreign_keys = OFF;
+    `);
+
     await localDb.execAsync('BEGIN');
+
+    let stmt: any = null;
     try {
       await localDb.execAsync('DELETE FROM productos;');
+      await localDb.execAsync(`DELETE FROM sqlite_sequence WHERE name='productos';`);
 
       const insertSql = `INSERT INTO productos (item_id, nombre, ean) VALUES (?, ?, ?)`;
+      stmt = await localDb.prepareAsync(insertSql);
+
+      const total = filas.length;
+      let i = 0;
 
       for (const it of filas) {
         const eanNorm = completarEAN13(it.ean);
-        // si queda vacío, lo saltamos
         if (!eanNorm) continue;
 
-        await localDb.runAsync(insertSql, [it.item_id, it.nombre, eanNorm]);
+        await stmt.executeAsync([it.item_id, it.nombre, eanNorm]);
+
+        i++;
+        if (i % 1000 === 0) {
+          console.log(`… insert ${i}/${total}`);
+          await new Promise(r => setTimeout(r, 0));
+        }
       }
 
+      // Índices al final (mejor rendimiento)
+      await localDb.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_productos_ean ON productos(ean);
+        CREATE INDEX IF NOT EXISTS idx_productos_item_id ON productos(item_id);
+        CREATE INDEX IF NOT EXISTS idx_productos_nombre ON productos(nombre);
+      `);
+
       await localDb.execAsync('COMMIT');
-      return { ok: true as const, count: filas.length };
+      console.log('✅ Importación local OK');
+      return { ok: true as const, count: total };
     } catch (e) {
       await localDb.execAsync('ROLLBACK');
       throw e;
+    } finally {
+      try {
+        if (stmt) await stmt.finalizeAsync();
+      } catch {}
+      try {
+        await localDb.execAsync(`PRAGMA foreign_keys = ON;`);
+      } catch {}
     }
   } catch (e: any) {
     console.error('❌ Error en importarCatalogoDesdeArchivo:', e);
