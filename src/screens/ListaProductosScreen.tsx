@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { FlatList, StyleSheet, Text, TextInput, View } from 'react-native';
+import { FlatList, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { all } from '../database/db';
 
 type Producto = {
@@ -14,9 +15,15 @@ export default function ListaProductosScreen() {
   const [data, setData] = useState<Producto[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Cámara
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scannerLocked, setScannerLocked] = useState(false);
+  const [permission, requestPermission] = useCameraPermissions();
+
   const q = useMemo(() => busqueda.trim(), [busqueda]);
   const qDigits = useMemo(() => q.replace(/\D/g, ''), [q]);
 
+  // --- SQL SEARCH (no carga 52k en memoria) ---
   useEffect(() => {
     let alive = true;
 
@@ -33,13 +40,11 @@ export default function ListaProductosScreen() {
           return;
         }
 
-        // 1) Si escribió números (ej. "192"), priorizamos item_id exacto
-        // Ajusta el <= 6 si tu ItemID puede ser más largo
-        const esPosibleItemId = qDigits.length > 0 && qDigits.length <= 6;
+        // 1) Prioridad: item_id exacto si parece código corto
+        const esPosibleItemId = qDigits.length > 0 && qDigits.length <= 6; // ajusta si tu ItemID es más largo
 
         if (esPosibleItemId) {
           const itemId = Number(qDigits);
-
           const exact = await all<Producto>(
             `SELECT id, item_id, nombre, ean
              FROM productos
@@ -49,14 +54,13 @@ export default function ListaProductosScreen() {
             [itemId]
           );
 
-          // Si existe match exacto, lo devolvemos y no buscamos por EAN/nombre
           if (exact.length > 0) {
             if (alive) setData(exact);
             return;
           }
         }
 
-        // 2) Si no hay match exacto, hacemos búsqueda general
+        // 2) Búsqueda general
         const likeText = `%${q}%`;
         const likeDigits = qDigits ? `%${qDigits}%` : likeText;
 
@@ -75,7 +79,7 @@ export default function ListaProductosScreen() {
       } finally {
         if (alive) setLoading(false);
       }
-    }, 150);
+    }, 200); // debounce 150-300ms
 
     return () => {
       alive = false;
@@ -83,18 +87,56 @@ export default function ListaProductosScreen() {
     };
   }, [q, qDigits]);
 
+  // --- Abrir cámara ---
+  const abrirScanner = async () => {
+    setScannerLocked(false);
+
+    if (!permission) {
+      // permisos aún cargando
+      return;
+    }
+
+    if (!permission.granted) {
+      const res = await requestPermission();
+      if (!res.granted) return;
+    }
+
+    setScannerOpen(true);
+  };
+
+  const cerrarScanner = () => {
+    setScannerOpen(false);
+    setScannerLocked(false);
+  };
+
+  const onBarcode = ({ data }: { data: string }) => {
+    if (scannerLocked) return;
+    setScannerLocked(true);
+
+    // Normaliza (solo dígitos) por si el scanner mete espacios
+    const limpio = String(data ?? '').trim();
+    setBusqueda(limpio);
+    cerrarScanner();
+  };
+
   return (
     <View style={styles.container}>
-      <Text style={styles.titulo}>Productos guardados</Text>
+      <Text style={styles.titulo}>Consultar códigos</Text>
 
-      <TextInput
-        placeholder="Buscar por nombre, código o EAN"
-        style={styles.input}
-        value={busqueda}
-        onChangeText={setBusqueda}
-        autoCapitalize="none"
-        autoCorrect={false}
-      />
+      <View style={styles.searchRow}>
+        <TextInput
+          placeholder="Buscar por nombre, código o EAN"
+          style={styles.input}
+          value={busqueda}
+          onChangeText={setBusqueda}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+
+        <Pressable style={styles.cameraBtn} onPress={abrirScanner}>
+          <Text style={styles.cameraIcon}>📷</Text>
+        </Pressable>
+      </View>
 
       <FlatList
         data={data}
@@ -108,10 +150,31 @@ export default function ListaProductosScreen() {
         )}
         ListEmptyComponent={
           <Text style={styles.vacio}>
-            {loading ? 'Cargando...' : 'No se encontraron productos.'}
+            {loading ? 'Buscando...' : 'No se encontraron productos.'}
           </Text>
         }
       />
+
+      <Modal visible={scannerOpen} animationType="slide" onRequestClose={cerrarScanner}>
+        <View style={styles.modalContainer}>
+          <View style={styles.modalTop}>
+            <Text style={styles.modalTitle}>Escanear código</Text>
+            <Pressable onPress={cerrarScanner} style={styles.closeBtn}>
+              <Text style={styles.closeText}>Cerrar</Text>
+            </Pressable>
+          </View>
+
+          <CameraView
+            style={styles.camera}
+            facing="back"
+            onBarcodeScanned={onBarcode}
+          />
+
+          <Text style={styles.modalHint}>
+            Apunta al código de barras. Se rellenará el buscador automáticamente.
+          </Text>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -119,19 +182,41 @@ export default function ListaProductosScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 16, backgroundColor: '#f4f4f4' },
   titulo: { fontSize: 20, fontWeight: 'bold', marginBottom: 12 },
+
+  searchRow: { flexDirection: 'row', gap: 10, alignItems: 'center', marginBottom: 16 },
   input: {
+    flex: 1,
     backgroundColor: 'white',
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 8,
-    marginBottom: 16,
   },
-  item: {
-    backgroundColor: 'white',
-    padding: 12,
-    marginBottom: 12,
-    borderRadius: 12,
+  cameraBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: '#9eb7deff',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
+  cameraIcon: { color: 'white', fontSize: 20 },
+
+  item: { backgroundColor: 'white', padding: 12, marginBottom: 12, borderRadius: 12 },
   nombre: { fontWeight: 'bold', marginBottom: 4 },
   vacio: { textAlign: 'center', color: 'gray', marginTop: 20 },
+
+  modalContainer: { flex: 1, backgroundColor: '#000' },
+  modalTop: {
+    paddingTop: 50,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  modalTitle: { color: 'white', fontSize: 18, fontWeight: '800' },
+  closeBtn: { paddingVertical: 8, paddingHorizontal: 12, backgroundColor: '#222', borderRadius: 8 },
+  closeText: { color: 'white', fontWeight: '700' },
+  camera: { flex: 1 },
+  modalHint: { color: 'white', padding: 16, opacity: 0.85 },
 });
