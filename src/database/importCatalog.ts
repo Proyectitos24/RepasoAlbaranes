@@ -1,7 +1,7 @@
 // src/database/importCatalog.ts
 import { openDatabaseAsync } from 'expo-sqlite';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system/legacy';
+import * as FileSystem from 'expo-file-system/legacy'; // o 'expo-file-system/legacy' si tú lo usas así
 import { getDb } from './db';
 
 type RowCatalogo = {
@@ -10,31 +10,41 @@ type RowCatalogo = {
   ean: string;
 };
 
-export type ImportProgress =
-  | { step: 'picker' }
-  | { step: 'mkdir'; path: string }
-  | { step: 'copy'; to: string }
-  | { step: 'tables' }
-  | { step: 'select' }
-  | { step: 'insert'; current: number; total: number };
-
-type ImportResult =
-  | { ok: true; count: number }
-  | { ok: false; reason: 'canceled' | 'no_uri' | 'missing_tables'; tables?: string[] };
-
 function baseDir(): string {
-  // legacy normalmente NO es null en Expo Go
-  const dir = FileSystem.documentDirectory ?? FileSystem.cacheDirectory;
-  if (!dir) throw new Error('No hay documentDirectory/cacheDirectory (¿web?). Usa Android/iOS con Expo Go.');
+  // Workaround types: en runtime existe en Android/iOS
+  const fs = FileSystem as unknown as {
+    documentDirectory?: string | null;
+    cacheDirectory?: string | null;
+  };
+
+  const dir = fs.documentDirectory ?? fs.cacheDirectory;
+  if (!dir) throw new Error('No hay documentDirectory/cacheDirectory (¿web?). Usa Android/iOS.');
   return dir;
 }
 
-export async function importarCatalogoDesdeArchivo(
-  onProgress?: (p: ImportProgress) => void
-): Promise<ImportResult> {
+// ✅ Si viene 12 -> calcula check digit y lo vuelve 13
+export function completarEAN13(raw: string): string {
+  const digits = String(raw).replace(/\D/g, '');
+
+  if (/^\d{13}$/.test(digits)) return digits;
+
+  if (/^\d{12}$/.test(digits)) {
+    let sum = 0;
+    for (let i = 0; i < 12; i++) {
+      const d = Number(digits[i]);
+      sum += d * (i % 2 === 0 ? 1 : 3); // pos 1,3,5.. x1 ; pos 2,4,6.. x3
+    }
+    const check = (10 - (sum % 10)) % 10;
+    return digits + String(check);
+  }
+
+  // fallback (si viniera raro)
+  return digits;
+}
+
+export async function importarCatalogoDesdeArchivo() {
   try {
     console.log('📁 STEP=picker: abriendo selector...');
-    onProgress?.({ step: 'picker' });
 
     const result = await DocumentPicker.getDocumentAsync({
       type: '*/*',
@@ -43,20 +53,24 @@ export async function importarCatalogoDesdeArchivo(
 
     if (result.canceled) {
       console.log('⏹️ cancelado');
-      return { ok: false, reason: 'canceled' };
+      return { ok: false as const, reason: 'canceled' as const };
     }
 
     const asset = result.assets?.[0];
     const originalUri = asset?.uri;
-    if (!originalUri) return { ok: false, reason: 'no_uri' };
+    const name = asset?.name ?? 'catalog.db';
 
-    console.log('📄 Archivo:', asset?.name, originalUri);
+    if (!originalUri) {
+      console.log('❌ no_uri');
+      return { ok: false as const, reason: 'no_uri' as const };
+    }
+
+    console.log('📄 Archivo:', name, originalUri);
 
     const sqliteDir = baseDir() + 'SQLite/';
     const destinoUri = sqliteDir + 'catalog.db';
 
     console.log('📁 STEP=mkdir:', sqliteDir);
-    onProgress?.({ step: 'mkdir', path: sqliteDir });
     await FileSystem.makeDirectoryAsync(sqliteDir, { intermediates: true });
 
     const exists = await FileSystem.getInfoAsync(destinoUri);
@@ -66,7 +80,6 @@ export async function importarCatalogoDesdeArchivo(
     }
 
     console.log('📥 STEP=copy ->', destinoUri);
-    onProgress?.({ step: 'copy', to: destinoUri });
     await FileSystem.copyAsync({ from: originalUri, to: destinoUri });
 
     const info = await FileSystem.getInfoAsync(destinoUri);
@@ -76,7 +89,6 @@ export async function importarCatalogoDesdeArchivo(
     const externalDB = await openDatabaseAsync('catalog.db');
 
     console.log('🔎 STEP=tables');
-    onProgress?.({ step: 'tables' });
     const tables = await externalDB.getAllAsync<{ name: string }>(
       `SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;`
     );
@@ -84,11 +96,10 @@ export async function importarCatalogoDesdeArchivo(
     console.log('📋 Tablas (primeras 25):', nombres.slice(0, 25));
 
     if (!nombres.includes('Item') || !nombres.includes('ItemEAN')) {
-      return { ok: false, reason: 'missing_tables', tables: nombres };
+      return { ok: false as const, reason: 'missing_tables' as const, tables: nombres };
     }
 
     console.log('🔍 STEP=select');
-    onProgress?.({ step: 'select' });
     const filas = await externalDB.getAllAsync<RowCatalogo>(`
       SELECT
         Item.ItemID AS item_id,
@@ -108,31 +119,23 @@ export async function importarCatalogoDesdeArchivo(
       await localDb.execAsync('DELETE FROM productos;');
 
       const insertSql = `INSERT INTO productos (item_id, nombre, ean) VALUES (?, ?, ?)`;
-      const total = filas.length;
 
-      let i = 0;
       for (const it of filas) {
-        const eanTexto = String(it.ean).replace(/['"]/g, '').trim();
-        await localDb.runAsync(insertSql, [it.item_id, it.nombre, eanTexto]);
+        const eanNorm = completarEAN13(it.ean);
+        // si queda vacío, lo saltamos
+        if (!eanNorm) continue;
 
-        i++;
-        // actualiza UI cada 500 (ajústalo si quieres)
-        if (i % 500 === 0) {
-          onProgress?.({ step: 'insert', current: i, total });
-          await new Promise(r => setTimeout(r, 0)); // deja respirar a la UI
-        }
+        await localDb.runAsync(insertSql, [it.item_id, it.nombre, eanNorm]);
       }
 
-      onProgress?.({ step: 'insert', current: total, total });
-
       await localDb.execAsync('COMMIT');
-      return { ok: true, count: total };
+      return { ok: true as const, count: filas.length };
     } catch (e) {
       await localDb.execAsync('ROLLBACK');
       throw e;
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error('❌ Error en importarCatalogoDesdeArchivo:', e);
-    throw e;
+    return { ok: false as const, reason: 'error' as const, error: String(e?.message ?? e) };
   }
 }
