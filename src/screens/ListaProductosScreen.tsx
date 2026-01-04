@@ -15,26 +15,61 @@ export default function ListaProductosScreen() {
   const [loading, setLoading] = useState(false);
 
   const q = useMemo(() => busqueda.trim(), [busqueda]);
+  const qDigits = useMemo(() => q.replace(/\D/g, ''), [q]);
 
   useEffect(() => {
     let alive = true;
+
     const t = setTimeout(async () => {
       setLoading(true);
-      try {
-        const like = `%${q}%`;
 
-        const rows = q.length === 0
-          ? await all<Producto>(
-              `SELECT id, item_id, nombre, ean FROM productos ORDER BY id DESC LIMIT 200`
-            )
-          : await all<Producto>(
-              `SELECT id, item_id, nombre, ean
-               FROM productos
-               WHERE nombre LIKE ? OR ean LIKE ? OR CAST(item_id AS TEXT) LIKE ?
-               ORDER BY id DESC
-               LIMIT 200`,
-              [like, like, like]
-            );
+      try {
+        // 0) Sin búsqueda -> últimos 200
+        if (q.length === 0) {
+          const rows = await all<Producto>(
+            `SELECT id, item_id, nombre, ean FROM productos ORDER BY id DESC LIMIT 200`
+          );
+          if (alive) setData(rows);
+          return;
+        }
+
+        // 1) Si escribió números (ej. "192"), priorizamos item_id exacto
+        // Ajusta el <= 6 si tu ItemID puede ser más largo
+        const esPosibleItemId = qDigits.length > 0 && qDigits.length <= 6;
+
+        if (esPosibleItemId) {
+          const itemId = Number(qDigits);
+
+          const exact = await all<Producto>(
+            `SELECT id, item_id, nombre, ean
+             FROM productos
+             WHERE item_id = ?
+             ORDER BY id DESC
+             LIMIT 200`,
+            [itemId]
+          );
+
+          // Si existe match exacto, lo devolvemos y no buscamos por EAN/nombre
+          if (exact.length > 0) {
+            if (alive) setData(exact);
+            return;
+          }
+        }
+
+        // 2) Si no hay match exacto, hacemos búsqueda general
+        const likeText = `%${q}%`;
+        const likeDigits = qDigits ? `%${qDigits}%` : likeText;
+
+        const rows = await all<Producto>(
+          `SELECT id, item_id, nombre, ean
+           FROM productos
+           WHERE nombre LIKE ?
+              OR ean LIKE ?
+              OR CAST(item_id AS TEXT) LIKE ?
+           ORDER BY id DESC
+           LIMIT 200`,
+          [likeText, likeDigits, likeDigits]
+        );
 
         if (alive) setData(rows);
       } finally {
@@ -46,7 +81,7 @@ export default function ListaProductosScreen() {
       alive = false;
       clearTimeout(t);
     };
-  }, [q]);
+  }, [q, qDigits]);
 
   return (
     <View style={styles.container}>
@@ -59,12 +94,11 @@ export default function ListaProductosScreen() {
         onChangeText={setBusqueda}
         autoCapitalize="none"
         autoCorrect={false}
-        // IMPORTANTE: sin maxLength y sin parsear a número => no se “come” el último dígito
       />
 
       <FlatList
         data={data}
-        keyExtractor={(item) => String(item.id)} // ✅ única, no usar ean
+        keyExtractor={(item) => String(item.id)}
         renderItem={({ item }) => (
           <View style={styles.item}>
             <Text style={styles.nombre}>{item.nombre}</Text>
