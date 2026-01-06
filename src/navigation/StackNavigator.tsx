@@ -8,7 +8,8 @@ import ListaProductosScreen from "../screens/ListaProductosScreen";
 import ImportarAlbaranesScreen from "../screens/ImportarAlbaranesScreen";
 import ListaAlbaranesScreen from "../screens/ListaAlbaranesScreen";
 import RepasoAlbaranScreen from "../screens/RepasoAlbaranScreen";
-
+import FaltasYSobrasScreen from "../screens/FaltasYSobrasScreen";
+import DetalleSaldoScreen from "../screens/DetalleSaldoScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -16,7 +17,11 @@ export default function StackNavigator() {
   return (
     <NavigationContainer>
       <Stack.Navigator initialRouteName="Menu">
-        <Stack.Screen name="Menu" component={MenuScreen} options={{ title: "Inicio" }} />
+        <Stack.Screen
+          name="Menu"
+          component={MenuScreen}
+          options={{ title: "Inicio" }}
+        />
 
         <Stack.Screen
           name="CargarCatalogo"
@@ -46,6 +51,16 @@ export default function StackNavigator() {
           name="RepasoAlbaran"
           component={RepasoAlbaranScreen}
           options={{ title: "Repaso" }}
+        />
+        <Stack.Screen
+          name="FaltasYSobras"
+          component={FaltasYSobrasScreen}
+          options={{ title: "Faltas y sobras" }}
+        />
+        <Stack.Screen
+          name="DetalleSaldo"
+          component={DetalleSaldoScreen}
+          options={{ title: "Detalle" }}
         />
       </Stack.Navigator>
     </NavigationContainer>

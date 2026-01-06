@@ -5,7 +5,6 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { getDb } from './db';
 import { crearTablaProductos } from './setup';
 
-
 type RowCatalogo = {
   item_id: number;
   nombre: string;

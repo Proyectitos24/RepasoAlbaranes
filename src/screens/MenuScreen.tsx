@@ -65,6 +65,12 @@ export default function MenuScreen({ navigation }: any) {
       >
         <Text style={styles.btnText}>Repasar albaranes</Text>
       </Pressable>
+      <Pressable
+        style={styles.btn}
+        onPress={() => navigation.navigate("FaltasYSobras")}
+      >
+        <Text style={styles.btnText}>Faltas y sobras</Text>
+      </Pressable>
 
       {!hayCatalogo && (
         <Text style={styles.hint}>

@@ -3,8 +3,10 @@ export type RootStackParamList = {
   CargarCatalogo: undefined;
   ListaProductos: undefined;
 
-  // Albaranes
   ImportarAlbaranes: undefined;
   ListaAlbaranes: undefined;
-  RepasoAlbaran: { etiqueta: string };
+  RepasoAlbaran: { albaranId: number };
+
+  FaltasYSobras: undefined;
+  DetalleSaldo: { codigo: string; descripcion?: string };
 };
