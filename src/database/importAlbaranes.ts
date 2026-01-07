@@ -22,11 +22,24 @@ function baseDir(): string {
   return dir;
 }
 
-const toInt = (v: any) => Number(String(v ?? '').replace(/\D/g, '')) || 0;
+// ✅ parse seguro: evita "1.0" -> 10, "2,00" -> 200
+const toInt = (v: any) => {
+  if (v == null) return 0;
+  if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v);
+
+  const s = String(v).trim();
+  if (!s) return 0;
+
+  const normalized = s.replace(/\s/g, '').replace(',', '.');
+  const n = Number(normalized);
+  if (Number.isFinite(n)) return Math.trunc(n);
+
+  const digits = s.replace(/\D/g, '');
+  return digits ? Number(digits) : 0;
+};
 
 export async function importarAlbaranesDesdeListadoDB() {
   try {
-    console.log('📁 STEP=picker listado_contenido.db...');
     const result = await DocumentPicker.getDocumentAsync({
       type: '*/*',
       copyToCacheDirectory: true,
@@ -45,32 +58,26 @@ export async function importarAlbaranesDesdeListadoDB() {
     const filename = `listado_contenido_${Date.now()}.db`;
     const destinoUri = sqliteDir + filename;
 
-    console.log('📥 Copiando ->', destinoUri);
     await FileSystem.copyAsync({ from: originalUri, to: destinoUri });
 
-    console.log('📂 Abriendo DB externa:', filename);
     const ext = await openDatabaseAsync(filename);
 
     const tables = await ext.getAllAsync<{ name: string }>(
       `SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;`
     );
-    const names = tables.map(t => t.name);
-    console.log('📋 Tablas:', names);
+    const names = tables.map((t) => t.name);
 
     if (!names.includes('Linea')) {
       return { ok: false as const, reason: 'missing_linea' as const, tables: names };
     }
 
-    console.log('🔍 SELECT Linea...');
     const filas = await ext.getAllAsync<RowLinea>(`
       SELECT Etiqueta, Codigo, Descripcion, Cantidad, Falta
       FROM Linea
       ORDER BY id;
     `);
 
-    console.log('✅ Filas:', filas.length);
-
-    await crearTablasAlbaranes(); // ✅ crea tablas locales si faltan
+    await crearTablasAlbaranes();
     const db = await getDb();
 
     const byEtiqueta = new Map<string, RowLinea[]>();
@@ -83,18 +90,19 @@ export async function importarAlbaranesDesdeListadoDB() {
 
     await db.execAsync('BEGIN');
     try {
-      const upsertAlbaran = await db.prepareAsync(`
+      // existe / finalizado
+      const getExist = await db.prepareAsync(`
+        SELECT id, finished_at FROM albaranes WHERE etiqueta = ? LIMIT 1;
+      `);
+
+      // insertar SOLO si no existe (nunca pisamos)
+      const insAlbaran = await db.prepareAsync(`
         INSERT INTO albaranes (etiqueta, created_at)
-        VALUES (?, ?)
-        ON CONFLICT(etiqueta) DO UPDATE SET created_at=excluded.created_at;
+        VALUES (?, ?);
       `);
 
       const getAlbaranId = await db.prepareAsync(`
         SELECT id FROM albaranes WHERE etiqueta = ? LIMIT 1;
-      `);
-
-      const delItems = await db.prepareAsync(`
-        DELETE FROM albaran_items WHERE albaran_id = ?;
       `);
 
       const insItem = await db.prepareAsync(`
@@ -106,18 +114,29 @@ export async function importarAlbaranesDesdeListadoDB() {
 
       let totalAlbaranes = 0;
       let totalItems = 0;
+      const yaExisten: string[] = [];
+      const bloqueadosFinalizados: string[] = [];
 
       for (const [etiqueta, rows] of byEtiqueta.entries()) {
-        totalAlbaranes++;
         const now = new Date().toISOString();
-        await upsertAlbaran.executeAsync([etiqueta, now]);
+
+        const exStmt = await getExist.executeAsync([etiqueta]);
+        const exFirst = (await (exStmt as any).getFirstAsync()) as { id?: number; finished_at?: string | null } | null;
+
+        // ✅ si existe, NO tocar
+        if (exFirst?.id) {
+          if (exFirst.finished_at) bloqueadosFinalizados.push(etiqueta);
+          else yaExisten.push(etiqueta);
+          continue;
+        }
+
+        await insAlbaran.executeAsync([etiqueta, now]);
+        totalAlbaranes++;
 
         const idRows = await getAlbaranId.executeAsync([etiqueta]);
         const first = (await (idRows as any).getFirstAsync()) as { id?: number } | null;
         const albaranId = first?.id ?? null;
         if (!albaranId) continue;
-
-        await delItems.executeAsync([albaranId]);
 
         for (const r of rows) {
           const codigoRaw = String(r.Codigo ?? '').trim();
@@ -133,19 +152,28 @@ export async function importarAlbaranesDesdeListadoDB() {
         }
       }
 
-      await upsertAlbaran.finalizeAsync();
+      await getExist.finalizeAsync();
+      await insAlbaran.finalizeAsync();
       await getAlbaranId.finalizeAsync();
-      await delItems.finalizeAsync();
       await insItem.finalizeAsync();
 
       await db.execAsync('COMMIT');
-      return { ok: true as const, albaranes: totalAlbaranes, items: totalItems };
+      return { ok: true as const, albaranes: totalAlbaranes, items: totalItems, yaExisten, bloqueadosFinalizados };
     } catch (e) {
       await db.execAsync('ROLLBACK');
       throw e;
     }
   } catch (e: any) {
-    console.error('❌ Error importando albaranes:', e);
     return { ok: false as const, reason: 'error' as const, error: String(e?.message ?? e) };
+  } finally {
+    // limpia dbs temporales antiguas (mejor esfuerzo)
+    try {
+      const sqliteDir = baseDir() + 'SQLite/';
+      const files = await FileSystem.readDirectoryAsync(sqliteDir);
+      const temps = files.filter((f) => f.startsWith('listado_contenido_') && f.endsWith('.db'));
+      for (const f of temps.slice(0, Math.max(0, temps.length - 2))) {
+        await FileSystem.deleteAsync(sqliteDir + f, { idempotent: true } as any);
+      }
+    } catch {}
   }
 }
