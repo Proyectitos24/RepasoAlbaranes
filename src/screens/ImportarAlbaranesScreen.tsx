@@ -18,11 +18,52 @@ export default function ImportarAlbaranesScreen({ navigation }: any) {
         return;
       }
 
-      Alert.alert(
-        'Importación OK',
-        `Albaranes: ${res.albaranes}\nLíneas: ${res.items}`,
-        [{ text: 'Ir a repasar', onPress: () => navigation.navigate('ListaAlbaranes') }]
-      );
+      const yaExisten = (res as any).yaExisten as string[] | undefined;
+      const bloqueadosFinalizados = (res as any).bloqueadosFinalizados as string[] | undefined;
+
+      const nExist = yaExisten?.length ?? 0;
+      const nFin = bloqueadosFinalizados?.length ?? 0;
+
+      // ✅ Caso típico: re-subes 1 etiqueta FINALIZADA
+      if (res.albaranes === 0 && nFin === 1 && nExist === 0) {
+        const et = (bloqueadosFinalizados?.[0] ?? '').trim();
+        Alert.alert(
+          'Albarán ya repasado',
+          `La etiqueta ${et || '(sin etiqueta)'} ya está FINALIZADA. No se volvió a importar.`,
+          [
+            { text: 'Ver faltas y sobras', onPress: () => navigation.navigate('FaltasYSobras') },
+            { text: 'OK' },
+          ]
+        );
+        return;
+      }
+
+      // ✅ Caso típico: re-subes 1 etiqueta existente (NO finalizada)
+      if (res.albaranes === 0 && nExist === 1 && nFin === 0) {
+        Alert.alert('Aviso', 'Este albarán ya existe.', [
+          { text: 'OK' },
+          { text: 'Ir a repasar', onPress: () => navigation.navigate('ListaAlbaranes') },
+        ]);
+        return;
+      }
+
+      const ejemplos = (arr?: string[]) => {
+        if (!arr?.length) return '';
+        const show = arr.slice(0, 4).join(', ');
+        return arr.length > 4 ? `${show}…` : show;
+      };
+
+      const title = nExist || nFin ? 'Importación OK (con avisos)' : 'Importación OK';
+      let msg = `Nuevos albaranes: ${res.albaranes}\nNuevas líneas: ${res.items}`;
+
+      if (nExist) msg += `\n\nYa existen: ${nExist}${ejemplos(yaExisten) ? ` (${ejemplos(yaExisten)})` : ''}`;
+      if (nFin) msg += `\nFinalizados (no se tocaron): ${nFin}${ejemplos(bloqueadosFinalizados) ? ` (${ejemplos(bloqueadosFinalizados)})` : ''}`;
+
+      Alert.alert(title, msg, [
+        { text: 'Ver faltas y sobras', onPress: () => navigation.navigate('FaltasYSobras') },
+        { text: 'Ir a repasar', onPress: () => navigation.navigate('ListaAlbaranes') },
+        { text: 'OK' },
+      ]);
     } catch (e: any) {
       Alert.alert('Error', String(e?.message ?? e));
     } finally {
@@ -41,7 +82,7 @@ export default function ImportarAlbaranesScreen({ navigation }: any) {
       {loading && (
         <View style={styles.box}>
           <ActivityIndicator size="large" />
-          <Text style={styles.hint}>Convirtiendo a tabla…</Text>
+          <Text style={styles.hint}>Importando…</Text>
         </View>
       )}
     </View>

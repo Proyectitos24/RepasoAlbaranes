@@ -3,22 +3,34 @@ import { View, Text, StyleSheet, FlatList, Pressable, Alert } from 'react-native
 import { useFocusEffect } from '@react-navigation/native';
 import { getDb } from '../database/db';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { crearTablasSaldo } from '../database/setup';
+
+async function ensureColumn(db: any, table: string, colName: string, colDef: string) {
+  const info = (await db.getAllAsync(`PRAGMA table_info(${table});`)) as Array<{ name: string }>;
+  const exists = (info ?? []).some((r) => r.name === colName);
+  if (!exists) {
+    await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+  }
+}
 
 export default function ListaAlbaranesScreen({ navigation }: any) {
   const [albaranes, setAlbaranes] = useState<
-    Array<{ id: number; etiqueta: string; created_at: string | null; finished_at: string | null }>
+    Array<{ id: number; etiqueta: string; created_at: string | null; finished_at: string | null; archived_at?: string | null }>
   >([]);
 
   const load = useCallback(async () => {
     const db = await getDb();
-    const rows = await db.getAllAsync<{
-      id: number;
-      etiqueta: string;
-      created_at: string | null;
-      finished_at: string | null;
-    }>(`SELECT id, etiqueta, created_at, finished_at FROM albaranes ORDER BY id DESC;`);
-    setAlbaranes(rows);
+
+    // ✅ columna para “ocultar” albaranes finalizados sin tocar saldo
+    await ensureColumn(db, 'albaranes', 'archived_at', 'archived_at TEXT');
+
+    const rows = await db.getAllAsync(
+      `SELECT id, etiqueta, created_at, finished_at, archived_at
+       FROM albaranes
+       WHERE archived_at IS NULL
+       ORDER BY id DESC;`
+    );
+
+    setAlbaranes(rows as any);
   }, []);
 
   useFocusEffect(
@@ -27,88 +39,62 @@ export default function ListaAlbaranesScreen({ navigation }: any) {
     }, [load])
   );
 
-  const revertirSaldoSiFinalizado = async (albaranId: number) => {
+  const archivarAlbaranFinalizado = async (id: number) => {
     const db = await getDb();
-    await crearTablasSaldo();
-
-    // suma deltas por código (lo que ese albarán metió al saldo)
-    const sums = await db.getAllAsync<{ codigo: string; sum_delta: number }>(
-      `SELECT codigo, SUM(delta) as sum_delta
-       FROM saldo_movimientos
-       WHERE albaran_id = ?
-       GROUP BY codigo;`,
-      [albaranId]
-    );
-
-    if (!sums.length) return;
-
     const now = new Date().toISOString();
 
-    // aplicamos la reversa: saldo += (-sum_delta)
-    const upsert = await db.prepareAsync(`
-      INSERT INTO saldo_global (codigo, descripcion, saldo, updated_at)
-      VALUES (?, NULL, ?, ?)
-      ON CONFLICT(codigo) DO UPDATE SET
-        saldo = saldo_global.saldo + excluded.saldo,
-        updated_at = excluded.updated_at;
-    `);
+    await db.execAsync('BEGIN');
+    try {
+      // 1) ocultar el albarán (sale de la lista)
+      await db.runAsync(`UPDATE albaranes SET archived_at = ? WHERE id = ?;`, [now, id]);
 
-    for (const r of sums) {
-      const sumDelta = Number(r.sum_delta ?? 0);
-      if (!r.codigo || sumDelta === 0) continue;
-      await upsert.executeAsync([r.codigo, -sumDelta, now]);
+      // 2) opcional: borrar líneas para ahorrar espacio (NO afecta saldo)
+      await db.runAsync(`DELETE FROM albaran_items WHERE albaran_id = ?;`, [id]);
+
+      // ✅ NO tocar saldo_movimientos (para que faltas/sobras sigan)
+      await db.execAsync('COMMIT');
+      await load();
+    } catch {
+      await db.execAsync('ROLLBACK');
+      Alert.alert('Error', 'No se pudo archivar.');
     }
-
-    await upsert.finalizeAsync();
-
-    // borramos movimientos de ese albarán
-    await db.runAsync(`DELETE FROM saldo_movimientos WHERE albaran_id = ?;`, [albaranId]);
-
-    // limpieza: si queda saldo 0, fuera
-    await db.runAsync(`DELETE FROM saldo_global WHERE saldo = 0;`);
   };
 
-  const eliminarAlbaran = async (id: number) => {
+  const borrarAlbaranNoFinalizado = async (id: number) => {
     const db = await getDb();
 
     await db.execAsync('BEGIN');
     try {
-      const cab = await db.getAllAsync<{ finished_at: string | null }>(
-        `SELECT finished_at FROM albaranes WHERE id = ? LIMIT 1;`,
-        [id]
-      );
-      const finishedAt = cab?.[0]?.finished_at ?? null;
-
-      // ✅ si estaba finalizado, revertimos su impacto primero
-      if (finishedAt) {
-        await revertirSaldoSiFinalizado(id);
-      }
-
-      // borrar albarán
-      await db.runAsync('DELETE FROM albaran_items WHERE albaran_id = ?;', [id]);
-      await db.runAsync('DELETE FROM albaranes WHERE id = ?;', [id]);
-
+      await db.runAsync(`DELETE FROM albaran_items WHERE albaran_id = ?;`, [id]);
+      await db.runAsync(`DELETE FROM albaranes WHERE id = ?;`, [id]);
       await db.execAsync('COMMIT');
       await load();
-    } catch (e) {
+    } catch {
       await db.execAsync('ROLLBACK');
-      Alert.alert('Error', 'No se pudo eliminar el albarán.');
+      Alert.alert('Error', 'No se pudo borrar.');
     }
   };
 
-  const confirmarBorrar = (id: number, etiqueta: string, finishedAt: string | null) => {
-    const extra = finishedAt
-      ? '\n\n⚠️ Está FINALIZADO. Si lo borras, se revertirá su impacto en “Faltas y sobras”.'
-      : '';
-
-    Alert.alert(
-      'Eliminar albarán',
-      `¿Seguro que quieres eliminar el albarán ${etiqueta}?${extra}`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        { text: 'Eliminar', style: 'destructive', onPress: () => eliminarAlbaran(id) },
-      ]
-    );
+  const onTrash = (id: number, etiqueta: string, finishedAt: string | null) => {
+    if (finishedAt) {
+      Alert.alert(
+        'Quitar de la lista',
+        `Este albarán está FINALIZADO.\n\nSi lo quitas de la lista, las faltas/sobras se mantienen (solo el encargado las borra).`,
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Quitar', style: 'destructive', onPress: () => archivarAlbaranFinalizado(id) },
+        ]
+      );
+    } else {
+      Alert.alert(
+        'Eliminar albarán',
+        `¿Seguro que quieres eliminar el albarán ${etiqueta}?`,
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Eliminar', style: 'destructive', onPress: () => borrarAlbaranNoFinalizado(id) },
+        ]
+      );
+    }
   };
 
   return (
@@ -133,10 +119,7 @@ export default function ListaAlbaranesScreen({ navigation }: any) {
               )}
             </Pressable>
 
-            <Pressable
-              style={styles.trashBtn}
-              onPress={() => confirmarBorrar(item.id, item.etiqueta, item.finished_at)}
-            >
+            <Pressable style={styles.trashBtn} onPress={() => onTrash(item.id, item.etiqueta, item.finished_at)}>
               <MaterialCommunityIcons name="trash-can-outline" size={26} color="#d32f2f" />
             </Pressable>
           </View>
