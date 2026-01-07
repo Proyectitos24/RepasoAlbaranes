@@ -11,6 +11,7 @@ type Item = {
   descripcion: string;
   bultos_esperados: number;
   bultos_revisados: number;
+  falta: number;
 };
 
 export default function RepasoAlbaranScreen({ route, navigation }: any) {
@@ -19,27 +20,42 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
   const [items, setItems] = useState<Item[]>([]);
   const [loadingFin, setLoadingFin] = useState(false);
 
-  // buscador (también aquí cae el texto del scanner)
+  // cabecera
+  const [etiqueta, setEtiqueta] = useState<string>('');
+  const [finishedAt, setFinishedAt] = useState<string | null>(null);
+  const isFinalizado = !!finishedAt;
+
+  // buscador / scanner
   const [q, setQ] = useState('');
   const qDigits = useMemo(() => q.trim().replace(/\D/g, ''), [q]);
-
-  // lock para evitar dobles incrementos por renders/eventos
   const [scannerLocked, setScannerLocked] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
+
+  // modal stepper
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<Item | null>(null);
+  const [tempValue, setTempValue] = useState(0);
 
   const normalizarEAN13 = (raw: string) => {
     const d = String(raw ?? '').replace(/\D/g, '');
     if (!d) return '';
     if (d.length === 13) return d;
     if (d.length < 13) return d.padStart(13, '0');
-    // si el scanner mete prefijos (GS1/otros), toma los últimos 13
     return d.slice(-13);
   };
 
   const load = async () => {
     const db = await getDb();
+
+    const cab = await db.getAllAsync<{ etiqueta: string; finished_at: string | null }>(
+      `SELECT etiqueta, finished_at FROM albaranes WHERE id = ? LIMIT 1;`,
+      [albaranId]
+    );
+    setEtiqueta(cab?.[0]?.etiqueta ?? '');
+    setFinishedAt(cab?.[0]?.finished_at ?? null);
+
     const rows = await db.getAllAsync<Item>(
-      `SELECT id, item_id, codigo, descripcion, bultos_esperados, bultos_revisados
+      `SELECT id, item_id, codigo, descripcion, bultos_esperados, bultos_revisados, falta
        FROM albaran_items
        WHERE albaran_id = ?
        ORDER BY id ASC;`,
@@ -55,122 +71,13 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return items;
-
     return items.filter(it =>
       it.codigo.toLowerCase().includes(s) || it.descripcion.toLowerCase().includes(s)
     );
   }, [q, items]);
 
-  const incBulto = async (it: Item, inc = 1) => {
-    const db = await getDb();
-
-    await db.runAsync(
-      `UPDATE albaran_items
-       SET bultos_revisados = bultos_revisados + ?
-       WHERE id = ?;`,
-      [inc, it.id]
-    );
-
-    setItems(prev =>
-      prev.map(x =>
-        x.id === it.id
-          ? { ...x, bultos_revisados: Number(x.bultos_revisados ?? 0) + inc }
-          : x
-      )
-    );
-  };
-
-  // EAN -> item_id (productos) -> item del albarán
-  const resolverItemDesdeEAN = async (eanRaw: string): Promise<Item | null> => {
-    const db = await getDb();
-    const ean13 = normalizarEAN13(eanRaw);
-
-    // intenta con el valor exacto y con el normalizado a 13 (por si viene 12/14 o con ceros)
-    const rows = await db.getAllAsync<{ item_id: number | null }>(
-      `SELECT item_id
-       FROM productos
-       WHERE ean = ? OR ean = ?
-       LIMIT 1;`,
-      [eanRaw, ean13]
-    );
-
-    const itemId = rows?.[0]?.item_id ?? null;
-    if (itemId == null) {
-      Alert.alert('No encontrado', `EAN ${ean13} no existe en el catálogo. Importa/actualiza el catálogo.`);
-      return null;
-    }
-
-    const found = items.find(x => x.item_id === itemId || x.codigo === String(itemId));
-    if (!found) {
-      Alert.alert('No está en esta etiqueta', `EAN ${ean13} existe en catálogo (item_id ${itemId}), pero no está en este albarán.`);
-      return null;
-    }
-
-    return found;
-  };
-
-  const handleScan = async (raw: string) => {
-    if (scannerLocked) return;
-    setScannerLocked(true);
-
-    try {
-      const digits = String(raw ?? '').trim().replace(/\D/g, '');
-      if (!digits) return;
-
-      // Caso típico: scanner mete EAN13 (o con prefijo -> nos quedamos con los últimos 13)
-      const eanCandidate = digits.length >= 13 ? digits.slice(-13) : digits;
-
-      // SOLO tratamos como EAN si es largo (evita confundir con código corto)
-      if (eanCandidate.length >= 12) {
-        const it = await resolverItemDesdeEAN(eanCandidate);
-        if (!it) return;
-
-        await incBulto(it, 1);
-        setScanMsg(`+1  ${it.descripcion}`);
-        setTimeout(() => setScanMsg(null), 900);
-
-        // limpia el input para que no quede filtrando
-        setQ('');
-        return;
-      }
-
-      // Si alguien mete código corto manualmente y da Enter
-      const found = items.find(x => x.codigo === digits || String(x.item_id ?? '') === digits);
-      if (!found) {
-        Alert.alert('No encontrado', `Código ${digits} no existe en esta etiqueta.`);
-        return;
-      }
-
-      await incBulto(found, 1);
-      setScanMsg(`+1  ${found.descripcion}`);
-      setTimeout(() => setScanMsg(null), 900);
-      setQ('');
-    } finally {
-      setScannerLocked(false);
-    }
-  };
-
-  // AUTO: si el scanner físico escribe el EAN en el TextInput, suma +1
-  useEffect(() => {
-    if (!qDigits) return;
-
-    // dispara solo para EAN “largo” (evita que al buscar “12345” se auto-sume)
-    if (qDigits.length < 12) return;
-
-    const t = setTimeout(() => {
-      handleScan(qDigits);
-    }, 80);
-
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qDigits]);
-
-  // modal stepper
-  const [open, setOpen] = useState(false);
-  const [selected, setSelected] = useState<Item | null>(null);
-  const [tempValue, setTempValue] = useState(0);
-
   const openStepper = (it: Item) => {
+    if (isFinalizado) return;
     setSelected(it);
     setTempValue(Number(it.bultos_revisados ?? 0));
     setOpen(true);
@@ -178,6 +85,8 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
 
   const saveStepper = async () => {
     if (!selected) return;
+    if (isFinalizado) return;
+
     const db = await getDb();
 
     await db.runAsync(
@@ -193,56 +102,262 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     setSelected(null);
   };
 
-  const onFinalizar = () => {
-    Alert.alert(
-      'Finalizar repaso',
-      '¿Seguro que terminaste esta etiqueta?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Sí, finalizar',
-          style: 'destructive',
-          onPress: async () => {
-            if (loadingFin) return;
-            setLoadingFin(true);
-            try {
-              const res = await finalizarAlbaran(albaranId);
+  const incBulto = async (it: Item, inc = 1) => {
+    const db = await getDb();
 
-              if (res.already) {
-                Alert.alert('Info', 'Este albarán ya estaba finalizado.');
-              } else {
-                Alert.alert(
-                  'Guardado',
-                  `Faltan: ${res.faltan}\nSobran: ${res.sobran}\nLíneas con incidencia: ${res.tocados}`,
-                  [
-                    { text: 'Ver faltas y sobras', onPress: () => navigation.navigate('FaltasYSobras') },
-                    { text: 'OK' },
-                  ]
-                );
-              }
-            } catch {
-              Alert.alert('Error', 'No se pudo finalizar.');
-            } finally {
-              setLoadingFin(false);
-            }
-          },
-        },
-      ]
+    await db.runAsync(
+      `UPDATE albaran_items
+       SET bultos_revisados = bultos_revisados + ?
+       WHERE id = ?;`,
+      [inc, it.id]
     );
+
+    setItems(prev => {
+      const found = prev.find(x => x.id === it.id);
+      if (!found) {
+        return [...prev, { ...it, bultos_revisados: Number(it.bultos_revisados ?? 0) + inc }];
+      }
+      return prev.map(x =>
+        x.id === it.id ? { ...x, bultos_revisados: Number(x.bultos_revisados ?? 0) + inc } : x
+      );
+    });
+  };
+
+  // ✅ EAN -> productos (consulta códigos) -> item_id
+  // Si NO está en este albarán -> lo crea como EXTRA (esperado=0)
+  const resolverItemDesdeEAN = async (eanRaw: string): Promise<Item | null> => {
+    const db = await getDb();
+    const ean13 = normalizarEAN13(eanRaw);
+
+    const prod = await db.getAllAsync<{ item_id: number; nombre: string }>(
+      `SELECT item_id, nombre
+       FROM productos
+       WHERE ean = ? OR ean = ?
+       LIMIT 1;`,
+      [eanRaw, ean13]
+    );
+
+    const itemId = prod?.[0]?.item_id ?? null;
+    const nombre = (prod?.[0]?.nombre ?? '').trim();
+
+    if (itemId == null) {
+      Alert.alert('No encontrado', `EAN ${ean13} no existe en el catálogo.`);
+      return null;
+    }
+
+    // 1) si ya está en memoria
+    const inMemory = items.find(x => x.item_id === itemId);
+    if (inMemory) return inMemory;
+
+    // 2) si ya existe en DB (por si lo creaste antes como EXTRA)
+    const existing = await db.getAllAsync<Item>(
+      `SELECT id, item_id, codigo, descripcion, bultos_esperados, bultos_revisados, falta
+       FROM albaran_items
+       WHERE albaran_id = ? AND item_id = ?
+       LIMIT 1;`,
+      [albaranId, itemId]
+    );
+
+    if (existing.length > 0) {
+      const row = existing[0];
+      setItems(prev => (prev.some(x => x.id === row.id) ? prev : [row, ...prev]));
+      return row;
+    }
+
+    // 3) ✅ crear como EXTRA
+    const desc = nombre || `ITEM ${itemId}`;
+
+    const insertRes: any = await db.runAsync(
+      `INSERT INTO albaran_items (
+        albaran_id, item_id, codigo, descripcion, bultos_esperados, bultos_revisados, falta
+      ) VALUES (?, ?, ?, ?, 0, 0, 0);`,
+      [albaranId, itemId, String(itemId), desc]
+    );
+
+    const newItem: Item = {
+      id: Number(insertRes?.lastInsertRowId),
+      item_id: itemId,
+      codigo: String(itemId),
+      descripcion: desc,
+      bultos_esperados: 0,
+      bultos_revisados: 0,
+      falta: 0,
+    };
+
+    setItems(prev => [newItem, ...prev]);
+    return newItem;
+  };
+
+  // ✅ Código corto -> productos (consulta códigos) -> crear EXTRA si no está
+  const resolverItemDesdeCodigoCorto = async (raw: string): Promise<Item | null> => {
+    const db = await getDb();
+    const digits = String(raw ?? '').trim().replace(/\D/g, '');
+    const itemId = Number(digits);
+    if (!digits || !Number.isFinite(itemId) || itemId <= 0) return null;
+
+    // 1) si ya está en memoria
+    const inMemory = items.find(x => x.item_id === itemId || x.codigo === digits);
+    if (inMemory) return inMemory;
+
+    // 2) consulta códigos por item_id
+    const prod = await db.getAllAsync<{ item_id: number; nombre: string }>(
+      `SELECT item_id, nombre FROM productos WHERE item_id = ? LIMIT 1;`,
+      [itemId]
+    );
+    const nombre = (prod?.[0]?.nombre ?? '').trim();
+
+    if (!prod?.[0]?.item_id) {
+      Alert.alert('No encontrado', `El código ${digits} no existe en “consulta códigos”.`);
+      return null;
+    }
+
+    // 3) si ya existe en DB
+    const existing = await db.getAllAsync<Item>(
+      `SELECT id, item_id, codigo, descripcion, bultos_esperados, bultos_revisados, falta
+       FROM albaran_items
+       WHERE albaran_id = ? AND item_id = ?
+       LIMIT 1;`,
+      [albaranId, itemId]
+    );
+
+    if (existing.length > 0) {
+      const row = existing[0];
+      setItems(prev => (prev.some(x => x.id === row.id) ? prev : [row, ...prev]));
+      return row;
+    }
+
+    // 4) ✅ crear como EXTRA
+    const desc = nombre || `ITEM ${itemId}`;
+
+    const insertRes: any = await db.runAsync(
+      `INSERT INTO albaran_items (
+        albaran_id, item_id, codigo, descripcion, bultos_esperados, bultos_revisados, falta
+      ) VALUES (?, ?, ?, ?, 0, 0, 0);`,
+      [albaranId, itemId, String(itemId), desc]
+    );
+
+    const newItem: Item = {
+      id: Number(insertRes?.lastInsertRowId),
+      item_id: itemId,
+      codigo: String(itemId),
+      descripcion: desc,
+      bultos_esperados: 0,
+      bultos_revisados: 0,
+      falta: 0,
+    };
+
+    setItems(prev => [newItem, ...prev]);
+    return newItem;
+  };
+
+  const handleScan = async (raw: string) => {
+    if (isFinalizado) {
+      Alert.alert('Finalizado', 'Este albarán ya está finalizado. No se puede modificar.');
+      setQ('');
+      return;
+    }
+
+    if (scannerLocked) return;
+    setScannerLocked(true);
+
+    try {
+      const digits = String(raw ?? '').trim().replace(/\D/g, '');
+      if (!digits) return;
+
+      // EAN (o viene con prefijos)
+      const eanCandidate = digits.length >= 13 ? digits.slice(-13) : digits;
+
+      if (eanCandidate.length >= 12) {
+        const it = await resolverItemDesdeEAN(eanCandidate);
+        if (!it) return;
+
+        await incBulto(it, 1);
+        setScanMsg(`+1  ${it.descripcion}${Number(it.bultos_esperados ?? 0) === 0 ? ' (EXTRA)' : ''}`);
+        setTimeout(() => setScanMsg(null), 900);
+
+        setQ('');
+        return;
+      }
+
+      // ✅ código corto manual -> crear EXTRA si no está
+      const it = await resolverItemDesdeCodigoCorto(digits);
+      if (!it) return;
+
+      await incBulto(it, 1);
+      setScanMsg(`+1  ${it.descripcion}${Number(it.bultos_esperados ?? 0) === 0 ? ' (EXTRA)' : ''}`);
+      setTimeout(() => setScanMsg(null), 900);
+
+      setQ('');
+    } finally {
+      setScannerLocked(false);
+    }
+  };
+
+  // ✅ AUTO: scanner escribe en el input -> suma +1
+  useEffect(() => {
+    if (!qDigits) return;
+    if (qDigits.length < 12) return; // solo EAN largos para auto
+    const t = setTimeout(() => handleScan(qDigits), 80);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qDigits]);
+
+  const onFinalizar = () => {
+    if (isFinalizado) {
+      Alert.alert('Info', 'Este albarán ya estaba finalizado.');
+      return;
+    }
+
+    Alert.alert('Finalizar repaso', '¿Seguro que terminaste esta etiqueta?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Sí, finalizar',
+        style: 'destructive',
+        onPress: async () => {
+          if (loadingFin) return;
+          setLoadingFin(true);
+          try {
+            const res = await finalizarAlbaran(albaranId);
+
+            if (res.already) {
+              Alert.alert('Info', 'Este albarán ya estaba finalizado.');
+              await load();
+            } else {
+              await load();
+              Alert.alert(
+                'Guardado',
+                `Faltan: ${res.faltan}\nSobran: ${res.sobran}\nLíneas con incidencia: ${res.tocados}`,
+                [
+                  { text: 'Ver faltas y sobras', onPress: () => navigation.navigate('FaltasYSobras') },
+                  { text: 'OK' },
+                ]
+              );
+            }
+          } catch {
+            Alert.alert('Error', 'No se pudo finalizar.');
+          } finally {
+            setLoadingFin(false);
+          }
+        },
+      },
+    ]);
   };
 
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Repaso</Text>
+      {etiqueta ? <Text style={styles.subtitle}>Etiqueta: {etiqueta}</Text> : null}
+      {isFinalizado ? <Text style={styles.done}>Finalizado: {finishedAt?.split('T')[0]}</Text> : null}
 
       <View style={styles.searchWrap}>
         <TextInput
           value={q}
           onChangeText={setQ}
-          placeholder="Buscar por código o descripción… (o escanea EAN)"
+          placeholder="Buscar por código o escanear EAN…"
           style={styles.search}
           autoCapitalize="none"
           autoCorrect={false}
+          editable={!isFinalizado}
           returnKeyType="done"
           onSubmitEditing={() => handleScan(q)}
         />
@@ -259,15 +374,17 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
           const ok = rev === esp;
           const sobra = rev > esp;
           const falta = rev < esp;
+          const extra = esp === 0;
 
           return (
             <Pressable
-              style={[styles.row, ok && styles.ok, falta && styles.warn, sobra && styles.bad]}
+              style={[styles.row, ok && styles.ok, falta && styles.warn, sobra && styles.bad, extra && styles.extra]}
               onPress={() => openStepper(item)}
+              disabled={isFinalizado}
             >
               <Text style={styles.desc}>{item.descripcion}</Text>
               <Text style={styles.meta}>
-                Código: {item.codigo} | Bultos: {rev}/{esp}
+                Código: {item.codigo} | Bultos: {rev}/{esp}{extra ? '  (EXTRA)' : ''}
               </Text>
             </Pressable>
           );
@@ -275,9 +392,11 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
         ListEmptyComponent={<Text style={styles.empty}>Sin resultados.</Text>}
       />
 
-      <Pressable style={[styles.btn, loadingFin && styles.btnDisabled]} disabled={loadingFin} onPress={onFinalizar}>
-        <Text style={styles.btnText}>{loadingFin ? 'Guardando…' : 'Finalizar'}</Text>
-      </Pressable>
+      {!isFinalizado && (
+        <Pressable style={[styles.btn, loadingFin && styles.btnDisabled]} disabled={loadingFin} onPress={onFinalizar}>
+          <Text style={styles.btnText}>{loadingFin ? 'Guardando…' : 'Finalizar'}</Text>
+        </Pressable>
+      )}
 
       <Modal transparent visible={open} animationType="fade" onRequestClose={() => setOpen(false)}>
         <View style={styles.backdrop}>
@@ -313,7 +432,9 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 16, backgroundColor: '#f4f4f4' },
-  title: { fontSize: 20, fontWeight: '800', marginBottom: 12 },
+  title: { fontSize: 20, fontWeight: '800', marginBottom: 4 },
+  subtitle: { opacity: 0.7, marginBottom: 2 },
+  done: { color: '#2e7d32', fontWeight: '800', marginBottom: 10 },
 
   searchWrap: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   search: {
@@ -329,9 +450,10 @@ const styles = StyleSheet.create({
   scanMsg: { marginBottom: 8, fontWeight: '800', opacity: 0.8 },
 
   row: { backgroundColor: '#fff', padding: 12, borderRadius: 12, marginBottom: 10, borderWidth: 2, borderColor: '#eee' },
-  ok: { borderColor: '#26cd2fff' },
-  warn: { borderColor: '#8d8484ff' }, // falta
-  bad: { borderColor: '#da3535ff' },  // sobra
+  ok: { borderColor: '#2e7d32' },
+  warn: { borderColor: '#f57c00' }, // falta
+  bad: { borderColor: '#c62828' },  // sobra
+  extra: { borderStyle: 'dashed' },
 
   desc: { fontWeight: '800' },
   meta: { opacity: 0.7, marginTop: 4 },
