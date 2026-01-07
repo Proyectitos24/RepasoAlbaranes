@@ -1,23 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList } from 'react-native';
-import { listarMovimientos, listarSaldo } from '../database/saldo';
+import { getSaldoByGrupoYCodigo, listarMovimientos } from '../database/saldo';
 
 export default function DetalleSaldoScreen({ route }: any) {
-  const { codigo, descripcion } = route.params;
+  const { grupo, codigo, descripcion } = route.params;
 
   const [saldo, setSaldo] = useState<number>(0);
   const [movs, setMovs] = useState<Array<{ etiqueta: string | null; delta: number; created_at: string }>>([]);
 
   useEffect(() => {
     (async () => {
-      const rows = await listarSaldo();
-      const row = rows.find(r => r.codigo === codigo);
-      setSaldo(row?.saldo ?? 0);
+      const s = await getSaldoByGrupoYCodigo(grupo, codigo);
+      setSaldo(s);
 
-      const m = await listarMovimientos(codigo);
+      const m = await listarMovimientos(grupo, codigo);
       setMovs(m);
     })();
-  }, [codigo]);
+  }, [grupo, codigo]);
 
   const isSobra = saldo > 0;
 
@@ -25,7 +24,7 @@ export default function DetalleSaldoScreen({ route }: any) {
     <View style={styles.container}>
       <Text style={styles.title}>{descripcion ?? 'Detalle'}</Text>
       <Text style={styles.sub}>
-        Código: {codigo} — {isSobra ? `Sobra neta: +${saldo}` : `Falta neta: ${Math.abs(saldo)}`}
+        Carpeta: {grupo} — Código: {codigo} — {isSobra ? `Sobra neta: +${saldo}` : `Falta neta: ${Math.abs(saldo)}`}
       </Text>
 
       <Text style={styles.h2}>Movimientos (por etiqueta)</Text>
