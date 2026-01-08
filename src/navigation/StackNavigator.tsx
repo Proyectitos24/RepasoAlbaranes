@@ -2,6 +2,7 @@ import React from "react";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "./types";
+
 import CargarCatalogoScreen from "../screens/CargarCatalogoScreen";
 import MenuScreen from "../screens/MenuScreen";
 import ListaProductosScreen from "../screens/ListaProductosScreen";
@@ -10,6 +11,10 @@ import ListaAlbaranesScreen from "../screens/ListaAlbaranesScreen";
 import RepasoAlbaranScreen from "../screens/RepasoAlbaranScreen";
 import FaltasYSobrasScreen from "../screens/FaltasYSobrasScreen";
 import DetalleSaldoScreen from "../screens/DetalleSaldoScreen";
+
+// ✅ NUEVAS PANTALLAS
+import ManualFaltasHomeScreen from "../screens/ManualFaltasHomeScreen";
+import ManualFaltasEditorScreen from "../screens/ManualFaltasEditorScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -52,17 +57,33 @@ export default function StackNavigator() {
           component={RepasoAlbaranScreen}
           options={{ title: "Repaso" }}
         />
+
         <Stack.Screen
           name="FaltasYSobras"
           component={FaltasYSobrasScreen}
           options={{ title: "Faltas y sobras" }}
         />
+
         <Stack.Screen
           name="DetalleSaldo"
           component={DetalleSaldoScreen}
           options={{ title: "Detalle" }}
         />
+
+        {/* ✅ NUEVO FLUJO MANUAL */}
+        <Stack.Screen
+          name="ManualFaltasHome"
+          component={ManualFaltasHomeScreen}
+          options={{ title: "Manual: carpetas" }}
+        />
+
+        <Stack.Screen
+          name="ManualFaltasEditor"
+          component={ManualFaltasEditorScreen}
+          options={{ title: "Manual: añadir" }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );
 }
+

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { getDb } from "../database/db";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 export default function MenuScreen({ navigation }: any) {
   const [count, setCount] = useState(0);
@@ -42,7 +43,10 @@ export default function MenuScreen({ navigation }: any) {
         style={styles.btn}
         onPress={() => navigation.navigate("CargarCatalogo")}
       >
-        <Text style={styles.btnText}>Cargar / Actualizar catálogo</Text>
+        <View style={styles.btnRow}>
+          <MaterialCommunityIcons name="database-plus-outline" size={20} color="#fff" />
+          <Text style={styles.btnText}>Cargar / Actualizar catálogo</Text>
+        </View>
       </Pressable>
 
       <Pressable
@@ -50,31 +54,57 @@ export default function MenuScreen({ navigation }: any) {
         disabled={!hayCatalogo}
         onPress={() => navigation.navigate("ListaProductos")}
       >
-        <Text style={styles.btnText}>Consultar códigos</Text>
+        <View style={styles.btnRow}>
+          <MaterialCommunityIcons name="barcode-scan" size={20} color="#fff" />
+          <Text style={styles.btnText}>Consultar códigos</Text>
+        </View>
       </Pressable>
+
       <Pressable
         style={styles.btn}
         onPress={() => navigation.navigate("ImportarAlbaranes")}
       >
-        <Text style={styles.btnText}>Añadir albaranes</Text>
+        <View style={styles.btnRow}>
+          <MaterialCommunityIcons name="file-import-outline" size={20} color="#fff" />
+          <Text style={styles.btnText}>Añadir albaranes</Text>
+        </View>
       </Pressable>
 
       <Pressable
         style={styles.btn}
         onPress={() => navigation.navigate("ListaAlbaranes")}
       >
-        <Text style={styles.btnText}>Repasar albaranes</Text>
+        <View style={styles.btnRow}>
+          <MaterialCommunityIcons name="playlist-check" size={20} color="#fff" />
+          <Text style={styles.btnText}>Repasar albaranes</Text>
+        </View>
       </Pressable>
+
       <Pressable
         style={styles.btn}
         onPress={() => navigation.navigate("FaltasYSobras")}
       >
-        <Text style={styles.btnText}>Faltas y sobras</Text>
+        <View style={styles.btnRow}>
+          <MaterialCommunityIcons name="clipboard-list-outline" size={20} color="#fff" />
+          <Text style={styles.btnText}>Faltas y sobras</Text>
+        </View>
+      </Pressable>
+
+      {/* ✅ NUEVO BOTÓN */}
+      <Pressable
+        style={[styles.btn, !hayCatalogo && styles.btnDisabled]}
+        disabled={!hayCatalogo}
+        onPress={() => navigation.navigate("ManualFaltasHome")}
+      >
+        <View style={styles.btnRow}>
+          <MaterialCommunityIcons name="folder-plus-outline" size={20} color="#fff" />
+          <Text style={styles.btnText}>Falta y sobra manual</Text>
+        </View>
       </Pressable>
 
       {!hayCatalogo && (
         <Text style={styles.hint}>
-          Primero carga el catálogo para poder consultar.
+          Primero carga el catálogo para poder consultar y usar el modo manual.
         </Text>
       )}
     </View>
@@ -99,6 +129,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   btnDisabled: { opacity: 0.4 },
+
+  btnRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   btnText: { color: "white", fontWeight: "800" },
 
   hint: { marginTop: 6, textAlign: "center", opacity: 0.6 },
