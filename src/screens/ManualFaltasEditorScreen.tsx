@@ -9,6 +9,10 @@ import {
   Modal,
   Alert,
 } from "react-native";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 
@@ -30,6 +34,8 @@ type Pick = { codigo: string; descripcion: string };
 export default function ManualFaltasEditorScreen({ route, navigation }: any) {
   const grupo = route?.params?.grupo as string | undefined;
   const grupoLabel = route?.params?.grupoLabel as string | undefined;
+
+  const insets = useSafeAreaInsets();
 
   const [rows, setRows] = useState<Row[]>([]);
   const [q, setQ] = useState("");
@@ -99,6 +105,7 @@ export default function ManualFaltasEditorScreen({ route, navigation }: any) {
       `SELECT item_id, nombre FROM productos WHERE item_id = ? LIMIT 1;`,
       [id]
     )) as any[];
+
     if (prod2?.[0]?.item_id) {
       return {
         codigo: String(prod2[0].item_id),
@@ -201,7 +208,9 @@ export default function ManualFaltasEditorScreen({ route, navigation }: any) {
   }
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView
+      style={[styles.container, { paddingBottom: 16 + insets.bottom }]}
+    >
       <Text style={styles.title}>{grupoLabel}</Text>
 
       <View style={styles.searchWrap}>
@@ -230,6 +239,7 @@ export default function ManualFaltasEditorScreen({ route, navigation }: any) {
       <FlatList
         data={filtered}
         keyExtractor={(i) => `${i.codigo}`}
+        contentContainerStyle={{ paddingBottom: 90 + insets.bottom }}
         renderItem={({ item }) => {
           const isSobra = item.saldo > 0;
           return (
@@ -256,8 +266,11 @@ export default function ManualFaltasEditorScreen({ route, navigation }: any) {
         }
       />
 
-      {/* ✅ Botón Guardar */}
-      <Pressable style={styles.saveBtn} onPress={() => navigation.goBack()}>
+      {/* ✅ Botón Guardar (ya no tapa la barra de Android) */}
+      <Pressable
+        style={[styles.saveBtn, { bottom: 12 + insets.bottom }]}
+        onPress={() => navigation.goBack()}
+      >
         <Text style={styles.saveBtnText}>Guardar</Text>
       </Pressable>
 
@@ -337,7 +350,7 @@ export default function ManualFaltasEditorScreen({ route, navigation }: any) {
           <CameraView style={{ flex: 1 }} onBarcodeScanned={onBarcodeScanned} />
         </View>
       </Modal>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -366,7 +379,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#e6e6e6",
   },
-  iconBtn: { backgroundColor: "#111", padding: 12, borderRadius: 12 },
+  iconBtn: { backgroundColor: "#111", padding: 10, borderRadius: 12 },
 
   row: {
     backgroundColor: "#fff",
@@ -375,19 +388,21 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     borderWidth: 2,
   },
-  rowSobra: { borderColor: "#2e7d32" },
-  rowFalta: { borderColor: "#c62828" },
+  rowSobra: { borderColor: "#3fc146ff" },
+  rowFalta: { borderColor: "#e23030ff" },
 
   desc: { fontWeight: "900" },
   meta: { opacity: 0.7, marginTop: 4 },
   empty: { textAlign: "center", marginTop: 20, opacity: 0.6 },
 
   saveBtn: {
+    position: "absolute",
+    left: 16,
+    right: 16,
     backgroundColor: "#111",
     padding: 14,
     borderRadius: 12,
     alignItems: "center",
-    marginTop: 6,
   },
   saveBtnText: { color: "#fff", fontWeight: "900" },
 
@@ -409,12 +424,10 @@ const styles = StyleSheet.create({
 
   modalActions: { flexDirection: "row", gap: 10, marginTop: 16 },
   modalBtn: { flex: 1, padding: 12, borderRadius: 12, alignItems: "center" },
-  modalBtnGhost: { backgroundColor: "#eee" },
-  modalBtnTextGhost: { color: "#000000ff", fontWeight: "800" },
   modalBtnTextPrimary: { color: "#fff", fontWeight: "800" },
 
   btnRed: { backgroundColor: "#c62828" },
-  btnGreen: { backgroundColor: "#2e7d32" },
+  btnGreen: { backgroundColor: "#26b22dff" },
 
   camWrap: { flex: 1, backgroundColor: "#000" },
   camHeader: {

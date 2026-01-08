@@ -1,16 +1,32 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, Alert, TextInput, Modal } from 'react-native';
-import BultosStepper from '../components/BultosStepper';
-import { getDb } from '../database/db';
-import { finalizarAlbaran } from '../database/saldo';
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  Pressable,
+  Alert,
+  TextInput,
+  Modal,
+} from "react-native";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { CameraView, useCameraPermissions } from "expo-camera";
+
+import BultosStepper from "../components/BultosStepper";
+import { getDb } from "../database/db";
+import { finalizarAlbaran } from "../database/saldo";
 
 const CARPETAS = [
-  { key: 'refrigerado', label: 'Refrigerado' },
-  { key: 'congelado', label: 'Congelado' },
-  { key: 'seco', label: 'Seco' },
-  { key: 'almacen_central', label: 'Almacén central' },
-  { key: 'fruta_verdura', label: 'Fruta y verdura' },
-  { key: 'pollo_carne', label: 'Pollo y carne' },
+  { key: "refrigerado", label: "Refrigerado" },
+  { key: "congelado", label: "Congelado" },
+  { key: "seco", label: "Seco" },
+  { key: "almacen_central", label: "Almacén central" },
+  { key: "fruta_verdura", label: "Fruta y verdura" },
+  { key: "pollo_carne", label: "Pollo y carne" },
 ];
 
 type Item = {
@@ -26,15 +42,17 @@ type Item = {
 export default function RepasoAlbaranScreen({ route, navigation }: any) {
   const { albaranId } = route.params;
 
+  const insets = useSafeAreaInsets();
+
   const [items, setItems] = useState<Item[]>([]);
   const [loadingFin, setLoadingFin] = useState(false);
 
-  const [etiqueta, setEtiqueta] = useState<string>('');
+  const [etiqueta, setEtiqueta] = useState<string>("");
   const [finishedAt, setFinishedAt] = useState<string | null>(null);
   const isFinalizado = !!finishedAt;
 
-  const [q, setQ] = useState('');
-  const qDigits = useMemo(() => q.trim().replace(/\D/g, ''), [q]);
+  const [q, setQ] = useState("");
+  const qDigits = useMemo(() => q.trim().replace(/\D/g, ""), [q]);
   const [scannerLocked, setScannerLocked] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
 
@@ -45,22 +63,52 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
   // modal carpeta al finalizar
   const [carpetaOpen, setCarpetaOpen] = useState(false);
 
+  // ✅ cámara (igual que en ManualFaltasEditor)
+  const [perm, requestPerm] = useCameraPermissions();
+  const [camOpen, setCamOpen] = useState(false);
+  const [camBusy, setCamBusy] = useState(false);
+
+  const openCamera = async () => {
+    if (isFinalizado) return;
+    if (!perm?.granted) {
+      const r = await requestPerm();
+      if (!r.granted) {
+        Alert.alert("Permiso", "No se dio permiso de cámara.");
+        return;
+      }
+    }
+    setCamOpen(true);
+  };
+
+  const onBarcodeScanned = async (res: { data: string }) => {
+    if (camBusy) return;
+    setCamBusy(true);
+    try {
+      setCamOpen(false);
+      await handleScan(res.data);
+    } finally {
+      setTimeout(() => setCamBusy(false), 600);
+    }
+  };
+
   const normalizarEAN13 = (raw: string) => {
-    const d = String(raw ?? '').replace(/\D/g, '');
-    if (!d) return '';
+    const d = String(raw ?? "").replace(/\D/g, "");
+    if (!d) return "";
     if (d.length === 13) return d;
-    if (d.length < 13) return d.padStart(13, '0');
+    if (d.length < 13) return d.padStart(13, "0");
     return d.slice(-13);
   };
 
   const load = async () => {
     const db = await getDb();
 
-    const cab = await db.getAllAsync<{ etiqueta: string; finished_at: string | null }>(
-      `SELECT etiqueta, finished_at FROM albaranes WHERE id = ? LIMIT 1;`,
-      [albaranId]
-    );
-    setEtiqueta(cab?.[0]?.etiqueta ?? '');
+    const cab = await db.getAllAsync<{
+      etiqueta: string;
+      finished_at: string | null;
+    }>(`SELECT etiqueta, finished_at FROM albaranes WHERE id = ? LIMIT 1;`, [
+      albaranId,
+    ]);
+    setEtiqueta(cab?.[0]?.etiqueta ?? "");
     setFinishedAt(cab?.[0]?.finished_at ?? null);
 
     const rows = await db.getAllAsync<Item>(
@@ -80,8 +128,10 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return items;
-    return items.filter(it =>
-      it.codigo.toLowerCase().includes(s) || it.descripcion.toLowerCase().includes(s)
+    return items.filter(
+      (it) =>
+        it.codigo.toLowerCase().includes(s) ||
+        it.descripcion.toLowerCase().includes(s)
     );
   }, [q, items]);
 
@@ -97,9 +147,16 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     if (isFinalizado) return;
 
     const db = await getDb();
-    await db.runAsync(`UPDATE albaran_items SET bultos_revisados = ? WHERE id = ?;`, [tempValue, selected.id]);
+    await db.runAsync(
+      `UPDATE albaran_items SET bultos_revisados = ? WHERE id = ?;`,
+      [tempValue, selected.id]
+    );
 
-    setItems(prev => prev.map(x => (x.id === selected.id ? { ...x, bultos_revisados: tempValue } : x)));
+    setItems((prev) =>
+      prev.map((x) =>
+        x.id === selected.id ? { ...x, bultos_revisados: tempValue } : x
+      )
+    );
 
     setOpen(false);
     setSelected(null);
@@ -115,10 +172,18 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       [inc, it.id]
     );
 
-    setItems(prev => {
-      const found = prev.find(x => x.id === it.id);
-      if (!found) return [...prev, { ...it, bultos_revisados: Number(it.bultos_revisados ?? 0) + inc }];
-      return prev.map(x => (x.id === it.id ? { ...x, bultos_revisados: Number(x.bultos_revisados ?? 0) + inc } : x));
+    setItems((prev) => {
+      const found = prev.find((x) => x.id === it.id);
+      if (!found)
+        return [
+          ...prev,
+          { ...it, bultos_revisados: Number(it.bultos_revisados ?? 0) + inc },
+        ];
+      return prev.map((x) =>
+        x.id === it.id
+          ? { ...x, bultos_revisados: Number(x.bultos_revisados ?? 0) + inc }
+          : x
+      );
     });
   };
 
@@ -132,14 +197,17 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     );
 
     const itemId = prod?.[0]?.item_id ?? null;
-    const nombre = (prod?.[0]?.nombre ?? '').trim();
+    const nombre = (prod?.[0]?.nombre ?? "").trim();
 
     if (itemId == null) {
-      Alert.alert('No encontrado', `EAN ${ean13} no existe en consulta códigos.`);
+      Alert.alert(
+        "No encontrado",
+        `EAN ${ean13} no existe en consulta códigos.`
+      );
       return null;
     }
 
-    const inMemory = items.find(x => x.item_id === itemId);
+    const inMemory = items.find((x) => x.item_id === itemId);
     if (inMemory) return inMemory;
 
     const existing = await db.getAllAsync<Item>(
@@ -152,7 +220,9 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
 
     if (existing.length > 0) {
       const row = existing[0];
-      setItems(prev => (prev.some(x => x.id === row.id) ? prev : [row, ...prev]));
+      setItems((prev) =>
+        prev.some((x) => x.id === row.id) ? prev : [row, ...prev]
+      );
       return row;
     }
 
@@ -175,17 +245,23 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       falta: 0,
     };
 
-    setItems(prev => [newItem, ...prev]);
+    setItems((prev) => [newItem, ...prev]);
     return newItem;
   };
 
-  const resolverItemDesdeCodigoCorto = async (raw: string): Promise<Item | null> => {
+  const resolverItemDesdeCodigoCorto = async (
+    raw: string
+  ): Promise<Item | null> => {
     const db = await getDb();
-    const digits = String(raw ?? '').trim().replace(/\D/g, '');
+    const digits = String(raw ?? "")
+      .trim()
+      .replace(/\D/g, "");
     const itemId = Number(digits);
     if (!digits || !Number.isFinite(itemId) || itemId <= 0) return null;
 
-    const inMemory = items.find(x => x.item_id === itemId || x.codigo === digits);
+    const inMemory = items.find(
+      (x) => x.item_id === itemId || x.codigo === digits
+    );
     if (inMemory) return inMemory;
 
     const prod = await db.getAllAsync<{ item_id: number; nombre: string }>(
@@ -193,9 +269,12 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       [itemId]
     );
 
-    const nombre = (prod?.[0]?.nombre ?? '').trim();
+    const nombre = (prod?.[0]?.nombre ?? "").trim();
     if (!prod?.[0]?.item_id) {
-      Alert.alert('No encontrado', `El código ${digits} no existe en consulta códigos.`);
+      Alert.alert(
+        "No encontrado",
+        `El código ${digits} no existe en consulta códigos.`
+      );
       return null;
     }
 
@@ -209,7 +288,9 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
 
     if (existing.length > 0) {
       const row = existing[0];
-      setItems(prev => (prev.some(x => x.id === row.id) ? prev : [row, ...prev]));
+      setItems((prev) =>
+        prev.some((x) => x.id === row.id) ? prev : [row, ...prev]
+      );
       return row;
     }
 
@@ -231,21 +312,23 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       falta: 0,
     };
 
-    setItems(prev => [newItem, ...prev]);
+    setItems((prev) => [newItem, ...prev]);
     return newItem;
   };
 
   const handleScan = async (raw: string) => {
     if (isFinalizado) {
-      Alert.alert('Finalizado', 'Este albarán ya está finalizado.');
-      setQ('');
+      Alert.alert("Finalizado", "Este albarán ya está finalizado.");
+      setQ("");
       return;
     }
     if (scannerLocked) return;
 
     setScannerLocked(true);
     try {
-      const digits = String(raw ?? '').trim().replace(/\D/g, '');
+      const digits = String(raw ?? "")
+        .trim()
+        .replace(/\D/g, "");
       if (!digits) return;
 
       const eanCandidate = digits.length >= 13 ? digits.slice(-13) : digits;
@@ -255,9 +338,13 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
         if (!it) return;
 
         await incBulto(it, 1);
-        setScanMsg(`+1  ${it.descripcion}${Number(it.bultos_esperados ?? 0) === 0 ? ' (EXTRA)' : ''}`);
+        setScanMsg(
+          `+1  ${it.descripcion}${
+            Number(it.bultos_esperados ?? 0) === 0 ? " (EXTRA)" : ""
+          }`
+        );
         setTimeout(() => setScanMsg(null), 900);
-        setQ('');
+        setQ("");
         return;
       }
 
@@ -265,9 +352,13 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       if (!it) return;
 
       await incBulto(it, 1);
-      setScanMsg(`+1  ${it.descripcion}${Number(it.bultos_esperados ?? 0) === 0 ? ' (EXTRA)' : ''}`);
+      setScanMsg(
+        `+1  ${it.descripcion}${
+          Number(it.bultos_esperados ?? 0) === 0 ? " (EXTRA)" : ""
+        }`
+      );
       setTimeout(() => setScanMsg(null), 900);
-      setQ('');
+      setQ("");
     } finally {
       setScannerLocked(false);
     }
@@ -281,10 +372,10 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qDigits]);
 
-  // ✅ ahora Finalizar primero pide carpeta
+  // ✅ Finalizar primero pide carpeta
   const onFinalizar = () => {
     if (isFinalizado) {
-      Alert.alert('Info', 'Este albarán ya estaba finalizado.');
+      Alert.alert("Info", "Este albarán ya estaba finalizado.");
       return;
     }
     setCarpetaOpen(true);
@@ -294,13 +385,13 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     setCarpetaOpen(false);
 
     Alert.alert(
-      'Guardar incidencias',
+      "Guardar incidencias",
       `¿Guardar faltas/sobras en: ${carpetaLabel}?`,
       [
-        { text: 'Cancelar', style: 'cancel' },
+        { text: "Cancelar", style: "cancel" },
         {
-          text: 'Sí, finalizar',
-          style: 'destructive',
+          text: "Sí, finalizar",
+          style: "destructive",
           onPress: async () => {
             if (loadingFin) return;
             setLoadingFin(true);
@@ -308,21 +399,24 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
               const res = await finalizarAlbaran(albaranId, carpetaKey);
 
               if (res.already) {
-                Alert.alert('Info', 'Este albarán ya estaba finalizado.');
+                Alert.alert("Info", "Este albarán ya estaba finalizado.");
                 await load();
               } else {
                 await load();
                 Alert.alert(
-                  'Guardado',
+                  "Guardado",
                   `Carpeta: ${carpetaLabel}\nFaltan: ${res.faltan}\nSobran: ${res.sobran}\nLíneas con incidencia: ${res.tocados}`,
                   [
-                    { text: 'Ver faltas y sobras', onPress: () => navigation.navigate('FaltasYSobras') },
-                    { text: 'OK' },
+                    {
+                      text: "Ver faltas y sobras",
+                      onPress: () => navigation.navigate("FaltasYSobras"),
+                    },
+                    { text: "OK" },
                   ]
                 );
               }
             } catch {
-              Alert.alert('Error', 'No se pudo finalizar.');
+              Alert.alert("Error", "No se pudo finalizar.");
             } finally {
               setLoadingFin(false);
             }
@@ -333,10 +427,16 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
   };
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView
+      style={[styles.container, { paddingBottom: 16 + insets.bottom }]}
+    >
       <Text style={styles.title}>Repaso</Text>
-      {etiqueta ? <Text style={styles.subtitle}>Etiqueta: {etiqueta}</Text> : null}
-      {isFinalizado ? <Text style={styles.done}>Finalizado: {finishedAt?.split('T')[0]}</Text> : null}
+      {etiqueta ? (
+        <Text style={styles.subtitle}>Etiqueta: {etiqueta}</Text>
+      ) : null}
+      {isFinalizado ? (
+        <Text style={styles.done}>Finalizado: {finishedAt?.split("T")[0]}</Text>
+      ) : null}
 
       <View style={styles.searchWrap}>
         <TextInput
@@ -350,6 +450,19 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
           returnKeyType="done"
           onSubmitEditing={() => handleScan(q)}
         />
+
+        {/* ✅ icono cámara */}
+        <Pressable
+          style={[styles.iconBtn, isFinalizado && styles.btnDisabled]}
+          disabled={isFinalizado}
+          onPress={openCamera}
+        >
+          <MaterialCommunityIcons
+            name="camera-outline"
+            size={22}
+            color="#fff"
+          />
+        </Pressable>
       </View>
 
       {scanMsg ? <Text style={styles.scanMsg}>{scanMsg}</Text> : null}
@@ -357,6 +470,9 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       <FlatList
         data={filtered}
         keyExtractor={(i) => String(i.id)}
+        contentContainerStyle={{
+          paddingBottom: (isFinalizado ? 16 : 90) + insets.bottom,
+        }}
         renderItem={({ item }) => {
           const rev = Number(item.bultos_revisados ?? 0);
           const esp = Number(item.bultos_esperados ?? 0);
@@ -367,13 +483,20 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
 
           return (
             <Pressable
-              style={[styles.row, ok && styles.ok, falta && styles.warn, sobra && styles.bad, extra && styles.extra]}
+              style={[
+                styles.row,
+                ok && styles.ok,
+                falta && styles.warn,
+                sobra && styles.bad,
+                extra && styles.extra,
+              ]}
               onPress={() => openStepper(item)}
               disabled={isFinalizado}
             >
               <Text style={styles.desc}>{item.descripcion}</Text>
               <Text style={styles.meta}>
-                Código: {item.codigo} | Bultos: {rev}/{esp}{extra ? '  (EXTRA)' : ''}
+                Código: {item.codigo} | Bultos: {rev}/{esp}
+                {extra ? "  (EXTRA)" : ""}
               </Text>
             </Pressable>
           );
@@ -382,34 +505,56 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       />
 
       {!isFinalizado && (
-        <Pressable style={[styles.btn, loadingFin && styles.btnDisabled]} disabled={loadingFin} onPress={onFinalizar}>
-          <Text style={styles.btnText}>{loadingFin ? 'Guardando…' : 'Finalizar'}</Text>
+        <Pressable
+          style={[
+            styles.btn,
+            loadingFin && styles.btnDisabled,
+            { bottom: 12 + insets.bottom },
+          ]}
+          disabled={loadingFin}
+          onPress={onFinalizar}
+        >
+          <Text style={styles.btnText}>
+            {loadingFin ? "Guardando…" : "Finalizar"}
+          </Text>
         </Pressable>
       )}
 
       {/* Modal stepper */}
-      <Modal transparent visible={open} animationType="fade" onRequestClose={() => setOpen(false)}>
+      <Modal
+        transparent
+        visible={open}
+        animationType="fade"
+        onRequestClose={() => setOpen(false)}
+      >
         <View style={styles.backdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>{selected?.descripcion}</Text>
             <Text style={styles.modalSub}>
-              Código: {selected?.codigo} — Esperado: {selected?.bultos_esperados}
+              Código: {selected?.codigo} — Esperado:{" "}
+              {selected?.bultos_esperados}
             </Text>
 
-            <View style={{ marginTop: 14, alignItems: 'center' }}>
+            <View style={{ marginTop: 14, alignItems: "center" }}>
               <BultosStepper
                 value={tempValue}
-                onMinus={() => setTempValue(v => Math.max(0, v - 1))}
-                onPlus={() => setTempValue(v => v + 1)}
+                onMinus={() => setTempValue((v) => Math.max(0, v - 1))}
+                onPlus={() => setTempValue((v) => v + 1)}
               />
             </View>
 
             <View style={styles.modalActions}>
-              <Pressable style={[styles.modalBtn, styles.modalBtnGhost]} onPress={() => setOpen(false)}>
+              <Pressable
+                style={[styles.modalBtn, styles.modalBtnGhost]}
+                onPress={() => setOpen(false)}
+              >
                 <Text style={styles.modalBtnTextGhost}>Cancelar</Text>
               </Pressable>
 
-              <Pressable style={[styles.modalBtn, styles.modalBtnPrimary]} onPress={saveStepper}>
+              <Pressable
+                style={[styles.modalBtn, styles.modalBtnPrimary]}
+                onPress={saveStepper}
+              >
                 <Text style={styles.modalBtnTextPrimary}>Guardar</Text>
               </Pressable>
             </View>
@@ -418,10 +563,17 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       </Modal>
 
       {/* Modal elegir carpeta */}
-      <Modal transparent visible={carpetaOpen} animationType="fade" onRequestClose={() => setCarpetaOpen(false)}>
+      <Modal
+        transparent
+        visible={carpetaOpen}
+        animationType="fade"
+        onRequestClose={() => setCarpetaOpen(false)}
+      >
         <View style={styles.backdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>¿Dónde guardo las incidencias?</Text>
+            <Text style={styles.modalTitle}>
+              ¿Dónde guardo las incidencias?
+            </Text>
             <Text style={styles.modalSub}>Elige la carpeta/pedido:</Text>
 
             <View style={{ marginTop: 12, gap: 10 }}>
@@ -437,61 +589,146 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
               ))}
             </View>
 
-            <Pressable style={[styles.modalBtn, styles.modalBtnGhost, { marginTop: 12 }]} onPress={() => setCarpetaOpen(false)}>
+            <Pressable
+              style={{
+                marginTop: 10,
+                backgroundColor: "#f9f5f5ff",
+                paddingVertical: 12,
+                borderRadius: 12,
+                alignItems: "center",
+                borderWidth: 1,
+                borderColor: "#0c0b0bff",
+              }}
+              onPress={() => setCarpetaOpen(false)}
+            >
               <Text style={styles.modalBtnTextGhost}>Cancelar</Text>
             </Pressable>
           </View>
         </View>
       </Modal>
-    </View>
+
+      {/* ✅ Modal cámara */}
+      <Modal
+        transparent
+        visible={camOpen}
+        animationType="fade"
+        onRequestClose={() => setCamOpen(false)}
+      >
+        <View style={styles.camWrap}>
+          <View style={styles.camHeader}>
+            <Text style={styles.camTitle}>Escanear</Text>
+            <Pressable onPress={() => setCamOpen(false)}>
+              <MaterialCommunityIcons name="close" size={24} color="#fff" />
+            </Pressable>
+          </View>
+          <CameraView style={{ flex: 1 }} onBarcodeScanned={onBarcodeScanned} />
+        </View>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: '#f4f4f4' },
-  title: { fontSize: 20, fontWeight: '800', marginBottom: 4 },
+  container: { flex: 1, padding: 16, backgroundColor: "#f4f4f4" },
+  title: { fontSize: 20, fontWeight: "800", marginBottom: 4 },
   subtitle: { opacity: 0.7, marginBottom: 2 },
-  done: { color: '#2e7d32', fontWeight: '800', marginBottom: 10 },
+  done: { color: "#2e7d32", fontWeight: "800", marginBottom: 10 },
 
-  searchWrap: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  searchWrap: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 10,
+    alignItems: "center",
+  },
   search: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: "#fff",
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderWidth: 1,
-    borderColor: '#e6e6e6',
+    borderColor: "#e6e6e6",
   },
+  iconBtn: { backgroundColor: "#111", padding: 10, borderRadius: 12 },
 
-  scanMsg: { marginBottom: 8, fontWeight: '800', opacity: 0.8 },
+  scanMsg: { marginBottom: 8, fontWeight: "800", opacity: 0.8 },
 
-  row: { backgroundColor: '#fff', padding: 12, borderRadius: 12, marginBottom: 10, borderWidth: 2, borderColor: '#eee' },
-  ok: { borderColor: '#2e7d32' },
-  warn: { borderColor: '#f57c00' },
-  bad: { borderColor: '#c62828' },
-  extra: { borderStyle: 'dashed' },
+  row: {
+    backgroundColor: "#fff",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 10,
+    borderWidth: 2,
+    borderColor: "#eee",
+  },
+  ok: { borderColor: "#3fc146ff" },
+  warn: { borderColor: "#e23030ff" },
+  bad: { borderColor: "#3fc146ff" },
+  extra: { borderStyle: "dashed" },
 
-  desc: { fontWeight: '800' },
+  desc: { fontWeight: "800" },
   meta: { opacity: 0.7, marginTop: 4 },
-  empty: { textAlign: 'center', marginTop: 30, opacity: 0.6 },
+  empty: { textAlign: "center", marginTop: 30, opacity: 0.6 },
 
-  btn: { backgroundColor: '#111', padding: 14, borderRadius: 12, alignItems: 'center', marginTop: 8 },
+  btn: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    backgroundColor: "#111",
+    padding: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
   btnDisabled: { opacity: 0.6 },
-  btnText: { color: '#fff', fontWeight: '800' },
+  btnText: { color: "#fff", fontWeight: "800" },
 
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center', padding: 18 },
-  modalCard: { width: '100%', backgroundColor: '#fff', borderRadius: 14, padding: 14 },
-  modalTitle: { fontSize: 16, fontWeight: '900' },
+  backdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 18,
+  },
+  modalCard: {
+    width: "100%",
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    padding: 14,
+  },
+  modalTitle: { fontSize: 16, fontWeight: "900" },
   modalSub: { marginTop: 6, opacity: 0.7 },
 
-  modalActions: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  modalBtn: { flex: 1, padding: 12, borderRadius: 12, alignItems: 'center' },
-  modalBtnGhost: { backgroundColor: '#eee' },
-  modalBtnPrimary: { backgroundColor: '#111' },
-  modalBtnTextGhost: { fontWeight: '800' },
-  modalBtnTextPrimary: { color: '#fff', fontWeight: '800' },
+  modalActions: { flexDirection: "row", gap: 10, marginTop: 16 },
+  modalBtn: {
+    flex: 1,
+    marginTop: 10,
+    backgroundColor: "#161916ff",
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#4b4949ff",
+  },
+  modalBtnGhost: { backgroundColor: "#eee" },
+  modalBtnPrimary: { backgroundColor: "#111" },
+  modalBtnTextGhost: { fontWeight: "800" },
+  modalBtnTextPrimary: { color: "#fff", fontWeight: "800" },
 
-  folderBtn: { backgroundColor: '#111', padding: 12, borderRadius: 12, alignItems: 'center' },
-  folderBtnText: { color: '#fff', fontWeight: '900' },
+  folderBtn: {
+    backgroundColor: "#111",
+    padding: 12,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  folderBtnText: { color: "#fff", fontWeight: "900" },
+
+  camWrap: { flex: 1, backgroundColor: "#000" },
+  camHeader: {
+    height: 56,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  camTitle: { color: "#fff", fontWeight: "900", fontSize: 16 },
 });
