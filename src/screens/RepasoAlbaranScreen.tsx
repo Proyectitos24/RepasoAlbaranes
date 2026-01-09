@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -40,6 +40,7 @@ type Item = {
 };
 
 export default function RepasoAlbaranScreen({ route, navigation }: any) {
+  const lastScanRef = useRef<{ key: String; t: number } | null>(null);
   const { albaranId } = route.params;
 
   const insets = useSafeAreaInsets();
@@ -191,13 +192,67 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     const db = await getDb();
     const ean13 = normalizarEAN13(eanRaw);
 
-    const prod = await db.getAllAsync<{ item_id: number; nombre: string }>(
-      `SELECT item_id, nombre FROM productos WHERE ean = ? OR ean = ? LIMIT 1;`,
-      [eanRaw, ean13]
+    // 1) Match exacto (soporta ean único o lista "a,b,c")
+    const prodExact = await db.getAllAsync<{
+      item_id: number;
+      nombre: string;
+      ean?: string;
+    }>(
+      `
+    SELECT item_id, nombre, ean
+    FROM productos
+    WHERE ean = ? OR ean = ?
+       OR (',' || REPLACE(REPLACE(ean,' ',''),';',',') || ',') LIKE '%,' || ? || ',%'
+       OR (',' || REPLACE(REPLACE(ean,' ',''),';',',') || ',') LIKE '%,' || ? || ',%'
+    LIMIT 1;
+    `,
+      [eanRaw, ean13, eanRaw, ean13]
     );
 
-    const itemId = prod?.[0]?.item_id ?? null;
-    const nombre = (prod?.[0]?.nombre ?? "").trim();
+    let itemId: number | null = prodExact?.[0]?.item_id ?? null;
+    let nombre: string = (prodExact?.[0]?.nombre ?? "").trim();
+
+    // 2) Si no existe y empieza por 2 => EAN variable (carne/pollo)
+    if (itemId == null && ean13.startsWith("2")) {
+      const key7 = ean13.slice(0, 7); // ej: 2500256 / 2500462
+
+      const cands = await db.getAllAsync<{
+        item_id: number;
+        nombre: string;
+        ean: string;
+      }>(
+        `
+      SELECT item_id, nombre, ean
+      FROM productos
+      WHERE REPLACE(REPLACE(ean,' ',''),';',',') LIKE ?
+      LIMIT 50;
+      `,
+        [`%${key7}%`]
+      );
+
+      const matches = (cands ?? []).filter((r) => {
+        const tokens = String(r.ean ?? "")
+          .replace(/[;\s]+/g, ",")
+          .split(",")
+          .map((t) => t.replace(/\D/g, ""))
+          .filter(Boolean);
+
+        return tokens.some(
+          (t) => t.startsWith(key7) && t.startsWith("2") && t.length >= 13
+        );
+      });
+
+      if (matches.length >= 1) {
+        if (matches.length > 1) {
+          Alert.alert(
+            "EAN variable (carne/pollo)",
+            `Encontré ${matches.length} posibles. Usaré: ${matches[0].nombre} (código ${matches[0].item_id}).`
+          );
+        }
+        itemId = matches[0].item_id;
+        nombre = String(matches[0].nombre ?? "").trim();
+      }
+    }
 
     if (itemId == null) {
       Alert.alert(
@@ -207,14 +262,16 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       return null;
     }
 
+    // ya existe en memoria?
     const inMemory = items.find((x) => x.item_id === itemId);
     if (inMemory) return inMemory;
 
+    // ya existe en albaran_items?
     const existing = await db.getAllAsync<Item>(
       `SELECT id, item_id, codigo, descripcion, bultos_esperados, bultos_revisados, falta
-       FROM albaran_items
-       WHERE albaran_id = ? AND item_id = ?
-       LIMIT 1;`,
+     FROM albaran_items
+     WHERE albaran_id = ? AND item_id = ?
+     LIMIT 1;`,
       [albaranId, itemId]
     );
 
@@ -228,10 +285,9 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
 
     // crear EXTRA
     const desc = nombre || `ITEM ${itemId}`;
-
     const insertRes: any = await db.runAsync(
       `INSERT INTO albaran_items (albaran_id, item_id, codigo, descripcion, bultos_esperados, bultos_revisados, falta)
-       VALUES (?, ?, ?, ?, 0, 0, 0);`,
+     VALUES (?, ?, ?, ?, 0, 0, 0);`,
       [albaranId, itemId, String(itemId), desc]
     );
 
@@ -317,6 +373,25 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
   };
 
   const handleScan = async (raw: string) => {
+    const now = Date.now();
+
+    // normaliza una sola vez
+    const digits = String(raw ?? "")
+      .trim()
+      .replace(/\D/g, "");
+    if (!digits) return;
+
+    // anti doble lectura (EAN o código corto)
+    const key =
+      digits.length >= 12 ? normalizarEAN13(digits).slice(-13) : digits;
+
+    const last = lastScanRef.current;
+    if (last && last.key === key && now - last.t < 1200) {
+      setQ("");
+      return;
+    }
+    lastScanRef.current = { key, t: now };
+
     if (isFinalizado) {
       Alert.alert("Finalizado", "Este albarán ya está finalizado.");
       setQ("");
@@ -326,11 +401,6 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
 
     setScannerLocked(true);
     try {
-      const digits = String(raw ?? "")
-        .trim()
-        .replace(/\D/g, "");
-      if (!digits) return;
-
       const eanCandidate = digits.length >= 13 ? digits.slice(-13) : digits;
 
       if (eanCandidate.length >= 12) {
@@ -363,14 +433,6 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       setScannerLocked(false);
     }
   };
-
-  useEffect(() => {
-    if (!qDigits) return;
-    if (qDigits.length < 12) return; // auto solo EAN
-    const t = setTimeout(() => handleScan(qDigits), 80);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qDigits]);
 
   // ✅ Finalizar primero pide carpeta
   const onFinalizar = () => {
