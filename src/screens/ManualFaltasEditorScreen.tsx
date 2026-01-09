@@ -82,22 +82,68 @@ export default function ManualFaltasEditorScreen({ route, navigation }: any) {
   ): Promise<Pick | null> => {
     const db = await getDb();
 
+    // Si parece EAN, primero exacto (soporta lista "a,b,c")
     if (digits.length >= 8) {
       const ean13 = normalizarEAN(digits);
-      const prod = (await db.getAllAsync(
-        `SELECT item_id, nombre FROM productos WHERE ean = ? OR ean = ? LIMIT 1;`,
-        [digits, ean13]
+
+      const prodExact = (await db.getAllAsync(
+        `
+      SELECT item_id, nombre, ean
+      FROM productos
+      WHERE ean = ? OR ean = ?
+         OR (',' || REPLACE(REPLACE(ean,' ',''),';',',') || ',') LIKE '%,' || ? || ',%'
+         OR (',' || REPLACE(REPLACE(ean,' ',''),';',',') || ',') LIKE '%,' || ? || ',%'
+      LIMIT 1;
+      `,
+        [digits, ean13, digits, ean13]
       )) as any[];
 
-      if (prod?.[0]?.item_id) {
+      if (prodExact?.[0]?.item_id) {
         return {
-          codigo: String(prod[0].item_id),
+          codigo: String(prodExact[0].item_id),
           descripcion:
-            String(prod[0].nombre ?? "").trim() || `ITEM ${prod[0].item_id}`,
+            String(prodExact[0].nombre ?? "").trim() ||
+            `ITEM ${prodExact[0].item_id}`,
         };
+      }
+
+      // fallback variable peso: empieza por 2
+      if (ean13.startsWith("2")) {
+        const key7 = ean13.slice(0, 7);
+
+        const cands = (await db.getAllAsync(
+          `
+        SELECT item_id, nombre, ean
+        FROM productos
+        WHERE REPLACE(REPLACE(ean,' ',''),';',',') LIKE ?
+        LIMIT 50;
+        `,
+          [`%${key7}%`]
+        )) as any[];
+
+        const match = (cands ?? []).find((r) => {
+          const tokens = String(r.ean ?? "")
+            .replace(/[;\s]+/g, ",")
+            .split(",")
+            .map((t) => t.replace(/\D/g, ""))
+            .filter(Boolean);
+
+          return tokens.some(
+            (t) => t.startsWith(key7) && t.startsWith("2") && t.length >= 13
+          );
+        });
+
+        if (match?.item_id) {
+          return {
+            codigo: String(match.item_id),
+            descripcion:
+              String(match.nombre ?? "").trim() || `ITEM ${match.item_id}`,
+          };
+        }
       }
     }
 
+    // Código corto
     const id = Number(digits);
     if (!Number.isFinite(id) || id <= 0) return null;
 
@@ -105,7 +151,6 @@ export default function ManualFaltasEditorScreen({ route, navigation }: any) {
       `SELECT item_id, nombre FROM productos WHERE item_id = ? LIMIT 1;`,
       [id]
     )) as any[];
-
     if (prod2?.[0]?.item_id) {
       return {
         codigo: String(prod2[0].item_id),
