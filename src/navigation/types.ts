@@ -9,6 +9,8 @@ export type RootStackParamList = {
   DetalleSaldo: { grupo: string; codigo: string; descripcion?: string };
 
   // ✅ NUEVOS
-ManualFaltasHome: undefined;
-ManualFaltasEditor: { grupo: string; grupoLabel: string };
+  ManualFaltasHome: undefined;
+  ManualFaltasEditor: { grupo: string; grupoLabel: string };
+  GestionarSaldoGrupo: { grupo: string; label?: string };
+
 };
