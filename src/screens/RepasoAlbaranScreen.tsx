@@ -64,6 +64,8 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
   // modal carpeta al finalizar
   const [carpetaOpen, setCarpetaOpen] = useState(false);
 
+  const scanQueueRef = useRef<string[]>([]);
+
   // ✅ cámara (igual que en ManualFaltasEditor)
   const [perm, requestPerm] = useCameraPermissions();
   const [camOpen, setCamOpen] = useState(false);
@@ -126,15 +128,39 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     load();
   }, [albaranId]);
 
+  const norm = (s: string) =>
+    (s ?? "")
+      .toString()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+
   const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
+    const s = norm(q.trim());
     if (!s) return items;
+
     return items.filter(
-      (it) =>
-        it.codigo.toLowerCase().includes(s) ||
-        it.descripcion.toLowerCase().includes(s)
+      (it) => norm(it.codigo).includes(s) || norm(it.descripcion).includes(s)
     );
   }, [q, items]);
+
+  const resumen = useMemo(() => {
+    let esp = 0;
+    let rev = 0;
+
+    for (const it of items) {
+      esp += Number(it.bultos_esperados ?? 0);
+      rev += Number(it.bultos_revisados ?? 0);
+    }
+
+    const diff = rev - esp;
+    return {
+      esp,
+      rev,
+      faltan: diff < 0 ? Math.abs(diff) : 0,
+      sobran: diff > 0 ? diff : 0,
+    };
+  }, [items]);
 
   const openStepper = (it: Item) => {
     if (isFinalizado) return;
@@ -174,17 +200,20 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     );
 
     setItems((prev) => {
-      const found = prev.find((x) => x.id === it.id);
-      if (!found)
-        return [
-          ...prev,
-          { ...it, bultos_revisados: Number(it.bultos_revisados ?? 0) + inc },
-        ];
-      return prev.map((x) =>
-        x.id === it.id
-          ? { ...x, bultos_revisados: Number(x.bultos_revisados ?? 0) + inc }
-          : x
-      );
+      const idx = prev.findIndex((x) => x.id === it.id);
+
+      const updated =
+        idx >= 0
+          ? {
+              ...prev[idx],
+              bultos_revisados: Number(prev[idx].bultos_revisados ?? 0) + inc,
+            }
+          : { ...it, bultos_revisados: Number(it.bultos_revisados ?? 0) + inc };
+
+      const rest = idx >= 0 ? prev.filter((x) => x.id !== it.id) : prev;
+
+      // 👇 lo movemos arriba
+      return [updated, ...rest];
     });
   };
 
@@ -386,7 +415,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       digits.length >= 12 ? normalizarEAN13(digits).slice(-13) : digits;
 
     const last = lastScanRef.current;
-    if (last && last.key === key && now - last.t < 1200) {
+    if (last && last.key === key && now - last.t < 180) {
       setQ("");
       return;
     }
@@ -397,9 +426,12 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       setQ("");
       return;
     }
-    if (scannerLocked) return;
-
+    if (scannerLocked) {
+      scanQueueRef.current.push(raw);
+      return;
+    }
     setScannerLocked(true);
+
     try {
       const eanCandidate = digits.length >= 13 ? digits.slice(-13) : digits;
 
@@ -431,6 +463,9 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       setQ("");
     } finally {
       setScannerLocked(false);
+
+      const next = scanQueueRef.current.shift();
+      if (next) setTimeout(() => handleScan(next), 0);
     }
   };
 
@@ -492,7 +527,18 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     <SafeAreaView
       style={[styles.container, { paddingBottom: 16 + insets.bottom }]}
     >
-      <Text style={styles.title}>Repaso</Text>
+      <View style={styles.headerRow}>
+        <Text style={styles.title}>Repaso</Text>
+
+        <View style={styles.pill}>
+          <Text style={styles.pillText}>
+            {resumen.rev}/{resumen.esp}
+            {resumen.faltan > 0 ? `  ·  Faltan ${resumen.faltan}` : ""}
+            {resumen.sobran > 0 ? `  ·  Sobran ${resumen.sobran}` : ""}
+          </Text>
+        </View>
+      </View>
+
       {etiqueta ? (
         <Text style={styles.subtitle}>Etiqueta: {etiqueta}</Text>
       ) : null}
@@ -501,19 +547,30 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       ) : null}
 
       <View style={styles.searchWrap}>
-        <TextInput
-          value={q}
-          onChangeText={setQ}
-          placeholder="Buscar por código o escanear EAN…"
-          style={styles.search}
-          autoCapitalize="none"
-          autoCorrect={false}
-          editable={!isFinalizado}
-          returnKeyType="done"
-          onSubmitEditing={() => handleScan(q)}
-        />
+        <View style={styles.searchField}>
+          <TextInput
+            value={q}
+            onChangeText={setQ}
+            placeholder="Buscar por código o escanear EAN…"
+            style={styles.searchInput}
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!isFinalizado}
+            returnKeyType="done"
+            onSubmitEditing={() => handleScan(q)}
+          />
 
-        {/* ✅ icono cámara */}
+          {q.length > 0 && !isFinalizado && (
+            <Pressable style={styles.searchClear} onPress={() => setQ("")}>
+              <MaterialCommunityIcons
+                name="close-circle"
+                size={20}
+                color="#666"
+              />
+            </Pressable>
+          )}
+        </View>
+
         <Pressable
           style={[styles.iconBtn, isFinalizado && styles.btnDisabled]}
           disabled={isFinalizado}
@@ -698,8 +755,8 @@ const styles = StyleSheet.create({
 
   searchWrap: {
     flexDirection: "row",
-    gap: 10,
-    marginBottom: 10,
+    gap: 8,
+    marginBottom: 8,
     alignItems: "center",
   },
   search: {
@@ -793,4 +850,51 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   camTitle: { color: "#fff", fontWeight: "900", fontSize: 16 },
+  clearBtn: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: "#e6e6e6",
+  },
+  stats: {
+    backgroundColor: "#fff",
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e6e6e6",
+    marginBottom: 10,
+  },
+  statsText: { fontWeight: "800", opacity: 0.8 },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 6,
+  },
+  pill: {
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#e6e6e6",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  pillText: { fontWeight: "800", opacity: 0.8, fontSize: 12 },
+  searchField: { flex: 1, position: "relative" },
+  searchInput: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    paddingRight: 38, // espacio para la X dentro
+    borderWidth: 1,
+    borderColor: "#e6e6e6",
+  },
+  searchClear: {
+    position: "absolute",
+    right: 10,
+    top: "50%",
+    marginTop: -10,
+  },
 });
