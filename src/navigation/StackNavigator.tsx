@@ -15,6 +15,7 @@ import DetalleSaldoScreen from "../screens/DetalleSaldoScreen";
 // ✅ NUEVAS PANTALLAS
 import ManualFaltasHomeScreen from "../screens/ManualFaltasHomeScreen";
 import ManualFaltasEditorScreen from "../screens/ManualFaltasEditorScreen";
+import GestionarSaldoGrupoScreen from "../screens/GestionarSaldoGrupoScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -82,8 +83,13 @@ export default function StackNavigator() {
           component={ManualFaltasEditorScreen}
           options={{ title: "Manual: añadir" }}
         />
+
+        <Stack.Screen
+          name="GestionarSaldoGrupo"
+          component={GestionarSaldoGrupoScreen}
+          options={{ title: "Gestionar carpeta" }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );
 }
-
