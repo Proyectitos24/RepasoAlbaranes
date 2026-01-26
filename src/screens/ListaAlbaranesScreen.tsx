@@ -14,6 +14,7 @@ import {
 import { useFocusEffect } from "@react-navigation/native";
 import { getDb } from "../database/db";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { importarAlbaranesDesdeListadoDB } from "../database/importAlbaranes";
 
 async function ensureColumn(db: any, table: string, colName: string, colDef: string) {
   const info = (await db.getAllAsync(`PRAGMA table_info(${table});`)) as Array<{ name: string }>;
@@ -33,6 +34,75 @@ export default function ListaAlbaranesScreen({ navigation }: any) {
       archived_at?: string | null;
     }>
   >([]);
+  //importar archivos.db desde el icono
+  const [importing, setImporting] = useState(false);
+
+const onQuickImport = async () => {
+  if (importing) return;
+
+  setImporting(true);
+  try {
+    const res = await importarAlbaranesDesdeListadoDB();
+
+    if (!res.ok) {
+      if ((res as any).reason === "canceled") return;
+      Alert.alert("Error", `No se pudo importar: ${(res as any).reason}`);
+      return;
+    }
+
+    const yaExisten = (res as any).yaExisten as string[] | undefined;
+    const bloqueadosFinalizados = (res as any).bloqueadosFinalizados as string[] | undefined;
+
+    const nExist = yaExisten?.length ?? 0;
+    const nFin = bloqueadosFinalizados?.length ?? 0;
+
+    // mismo comportamiento que ImportarAlbaranesScreen
+    if ((res as any).albaranes === 0 && nFin === 1 && nExist === 0) {
+      const et = (bloqueadosFinalizados?.[0] ?? "").trim();
+      Alert.alert(
+        "Albarán ya repasado",
+        `La etiqueta ${et || "(sin etiqueta)"} ya está FINALIZADA. No se volvió a importar.`,
+        [
+          { text: "Ver faltas y sobras", onPress: () => navigation.navigate("FaltasYSobras") },
+          { text: "OK" },
+        ]
+      );
+      return;
+    }
+
+    if ((res as any).albaranes === 0 && nExist === 1 && nFin === 0) {
+      Alert.alert("Aviso", "Este albarán ya existe.", [
+        { text: "OK" },
+        { text: "Ir a repasar", onPress: () => navigation.navigate("ListaAlbaranes") },
+      ]);
+      return;
+    }
+
+    const ejemplos = (arr?: string[]) => {
+      if (!arr?.length) return "";
+      const show = arr.slice(0, 4).join(", ");
+      return arr.length > 4 ? `${show}…` : show;
+    };
+
+    const title = nExist || nFin ? "Importación OK (con avisos)" : "Importación OK";
+    let msg = `Nuevos albaranes: ${(res as any).albaranes}\nNuevas líneas: ${(res as any).items}`;
+
+    if (nExist) msg += `\n\nYa existen: ${nExist}${ejemplos(yaExisten) ? ` (${ejemplos(yaExisten)})` : ""}`;
+    if (nFin) msg += `\nFinalizados (no se tocaron): ${nFin}${ejemplos(bloqueadosFinalizados) ? ` (${ejemplos(bloqueadosFinalizados)})` : ""}`;
+
+    Alert.alert(title, msg, [
+      { text: "Ver faltas y sobras", onPress: () => navigation.navigate("FaltasYSobras") },
+      { text: "Ir a repasar", onPress: () => navigation.navigate("ListaAlbaranes") },
+      { text: "OK" },
+    ]);
+  } catch (e: any) {
+    Alert.alert("Error", String(e?.message ?? e));
+  } finally {
+    setImporting(false);
+    await load(); // ✅
+  } 
+};
+
 
   // modal crear albarán vacío
   const [openCrear, setOpenCrear] = useState(false);
@@ -212,7 +282,7 @@ export default function ListaAlbaranesScreen({ navigation }: any) {
 
         <View style={styles.actions}>
           {/* seguir añadiendo albaranes */}
-          <Pressable style={styles.actionBtn} onPress={() => navigation.navigate("ImportarAlbaranes")}>
+          <Pressable style={[styles.actionBtn, importing && { opacity: 0.6 }]} onPress={onQuickImport} disabled={importing}>
             <MaterialCommunityIcons name="plus-box-outline" size={22} color="#fff" />
           </Pressable>
 
