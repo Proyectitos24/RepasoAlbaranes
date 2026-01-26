@@ -40,6 +40,20 @@ type Item = {
 };
 
 export default function RepasoAlbaranScreen({ route, navigation }: any) {
+  // ✅ Lote
+  const [modoLote, setModoLote] = useState(false);
+  const [rememberLote, setRememberLote] = useState(false);
+  const [loteQty, setLoteQty] = useState(1);
+
+  // ✅ Undo
+  const [undoAction, setUndoAction] = useState<{
+    itemId: number;
+    inc: number;
+  } | null>(null);
+
+  // ✅ Modal reutilizado para Lote
+  const [modalMode, setModalMode] = useState<"edit" | "lote">("edit");
+
   const lastScanRef = useRef<{ key: String; t: number } | null>(null);
   const { albaranId } = route.params;
 
@@ -119,7 +133,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
        FROM albaran_items
        WHERE albaran_id = ?
        ORDER BY id ASC;`,
-      [albaranId]
+      [albaranId],
     );
     setItems(rows);
   };
@@ -140,7 +154,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     if (!s) return items;
 
     return items.filter(
-      (it) => norm(it.codigo).includes(s) || norm(it.descripcion).includes(s)
+      (it) => norm(it.codigo).includes(s) || norm(it.descripcion).includes(s),
     );
   }, [q, items]);
 
@@ -163,26 +177,61 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
   }, [items]);
 
   const openStepper = (it: Item) => {
-    if (isFinalizado) return;
+    setModalMode("edit");
     setSelected(it);
     setTempValue(Number(it.bultos_revisados ?? 0));
     setOpen(true);
   };
 
+  const openLoteModal = (it: Item) => {
+    setModalMode("lote");
+    setSelected(it);
+    setTempValue(rememberLote ? Math.max(1, loteQty) : 1);
+    setOpen(true);
+  };
+
   const saveStepper = async () => {
     if (!selected) return;
-    if (isFinalizado) return;
-
     const db = await getDb();
+
+    if (modalMode === "lote") {
+      const inc = Math.max(0, Number(tempValue ?? 0));
+      if (inc <= 0) {
+        setOpen(false);
+        setSelected(null);
+        setModoLote(false);
+        setModalMode("edit");
+        return;
+      }
+
+      // reutiliza tu misma función de incremento (si ya la tienes)
+      await incBulto(selected, inc);
+
+      if (rememberLote) setLoteQty(inc);
+
+      setUndoAction({ itemId: selected.id, inc });
+      setTimeout(() => setUndoAction(null), 4500);
+
+      setScanMsg(`+${inc}  ${selected.descripcion ?? ""}`.trim());
+      setTimeout(() => setScanMsg(null), 900);
+
+      setOpen(false);
+      setSelected(null);
+      setModoLote(false);
+      setModalMode("edit");
+      return;
+    }
+
+    // modo normal (tu comportamiento actual)
     await db.runAsync(
       `UPDATE albaran_items SET bultos_revisados = ? WHERE id = ?;`,
-      [tempValue, selected.id]
+      [tempValue, selected.id],
     );
 
     setItems((prev) =>
       prev.map((x) =>
-        x.id === selected.id ? { ...x, bultos_revisados: tempValue } : x
-      )
+        x.id === selected.id ? { ...x, bultos_revisados: tempValue } : x,
+      ),
     );
 
     setOpen(false);
@@ -196,7 +245,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       `UPDATE albaran_items
        SET bultos_revisados = bultos_revisados + ?
        WHERE id = ?;`,
-      [inc, it.id]
+      [inc, it.id],
     );
 
     setItems((prev) => {
@@ -235,7 +284,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
        OR (',' || REPLACE(REPLACE(ean,' ',''),';',',') || ',') LIKE '%,' || ? || ',%'
     LIMIT 1;
     `,
-      [eanRaw, ean13, eanRaw, ean13]
+      [eanRaw, ean13, eanRaw, ean13],
     );
 
     let itemId: number | null = prodExact?.[0]?.item_id ?? null;
@@ -256,7 +305,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       WHERE REPLACE(REPLACE(ean,' ',''),';',',') LIKE ?
       LIMIT 50;
       `,
-        [`%${key7}%`]
+        [`%${key7}%`],
       );
 
       const matches = (cands ?? []).filter((r) => {
@@ -267,7 +316,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
           .filter(Boolean);
 
         return tokens.some(
-          (t) => t.startsWith(key7) && t.startsWith("2") && t.length >= 13
+          (t) => t.startsWith(key7) && t.startsWith("2") && t.length >= 13,
         );
       });
 
@@ -275,7 +324,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
         if (matches.length > 1) {
           Alert.alert(
             "EAN variable (carne/pollo)",
-            `Encontré ${matches.length} posibles. Usaré: ${matches[0].nombre} (código ${matches[0].item_id}).`
+            `Encontré ${matches.length} posibles. Usaré: ${matches[0].nombre} (código ${matches[0].item_id}).`,
           );
         }
         itemId = matches[0].item_id;
@@ -286,7 +335,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     if (itemId == null) {
       Alert.alert(
         "No encontrado",
-        `EAN ${ean13} no existe en consulta códigos.`
+        `EAN ${ean13} no existe en consulta códigos.`,
       );
       return null;
     }
@@ -301,13 +350,13 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
      FROM albaran_items
      WHERE albaran_id = ? AND item_id = ?
      LIMIT 1;`,
-      [albaranId, itemId]
+      [albaranId, itemId],
     );
 
     if (existing.length > 0) {
       const row = existing[0];
       setItems((prev) =>
-        prev.some((x) => x.id === row.id) ? prev : [row, ...prev]
+        prev.some((x) => x.id === row.id) ? prev : [row, ...prev],
       );
       return row;
     }
@@ -317,7 +366,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     const insertRes: any = await db.runAsync(
       `INSERT INTO albaran_items (albaran_id, item_id, codigo, descripcion, bultos_esperados, bultos_revisados, falta)
      VALUES (?, ?, ?, ?, 0, 0, 0);`,
-      [albaranId, itemId, String(itemId), desc]
+      [albaranId, itemId, String(itemId), desc],
     );
 
     const newItem: Item = {
@@ -335,7 +384,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
   };
 
   const resolverItemDesdeCodigoCorto = async (
-    raw: string
+    raw: string,
   ): Promise<Item | null> => {
     const db = await getDb();
     const digits = String(raw ?? "")
@@ -345,20 +394,20 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     if (!digits || !Number.isFinite(itemId) || itemId <= 0) return null;
 
     const inMemory = items.find(
-      (x) => x.item_id === itemId || x.codigo === digits
+      (x) => x.item_id === itemId || x.codigo === digits,
     );
     if (inMemory) return inMemory;
 
     const prod = await db.getAllAsync<{ item_id: number; nombre: string }>(
       `SELECT item_id, nombre FROM productos WHERE item_id = ? LIMIT 1;`,
-      [itemId]
+      [itemId],
     );
 
     const nombre = (prod?.[0]?.nombre ?? "").trim();
     if (!prod?.[0]?.item_id) {
       Alert.alert(
         "No encontrado",
-        `El código ${digits} no existe en consulta códigos.`
+        `El código ${digits} no existe en consulta códigos.`,
       );
       return null;
     }
@@ -368,13 +417,13 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
        FROM albaran_items
        WHERE albaran_id = ? AND item_id = ?
        LIMIT 1;`,
-      [albaranId, itemId]
+      [albaranId, itemId],
     );
 
     if (existing.length > 0) {
       const row = existing[0];
       setItems((prev) =>
-        prev.some((x) => x.id === row.id) ? prev : [row, ...prev]
+        prev.some((x) => x.id === row.id) ? prev : [row, ...prev],
       );
       return row;
     }
@@ -384,7 +433,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
     const insertRes: any = await db.runAsync(
       `INSERT INTO albaran_items (albaran_id, item_id, codigo, descripcion, bultos_esperados, bultos_revisados, falta)
        VALUES (?, ?, ?, ?, 0, 0, 0);`,
-      [albaranId, itemId, String(itemId), desc]
+      [albaranId, itemId, String(itemId), desc],
     );
 
     const newItem: Item = {
@@ -439,11 +488,22 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
         const it = await resolverItemDesdeEAN(eanCandidate);
         if (!it) return;
 
+        // ✅ si está en modo lote, abre el modal y NO suma +1
+        if (modoLote) {
+          openLoteModal(it);
+          setQ("");
+          return;
+        }
+
         await incBulto(it, 1);
+
+        // ✅ para deshacer
+        setUndoAction({ itemId: it.id, inc: 1 });
+        setTimeout(() => setUndoAction(null), 4500);
         setScanMsg(
           `+1  ${it.descripcion}${
             Number(it.bultos_esperados ?? 0) === 0 ? " (EXTRA)" : ""
-          }`
+          }`,
         );
         setTimeout(() => setScanMsg(null), 900);
         setQ("");
@@ -453,11 +513,20 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       const it = await resolverItemDesdeCodigoCorto(digits);
       if (!it) return;
 
+      if (modoLote) {
+        openLoteModal(it);
+        setQ("");
+        return;
+      }
+
       await incBulto(it, 1);
+      setUndoAction({ itemId: it.id, inc: 1 });
+      setTimeout(() => setUndoAction(null), 4500);
+
       setScanMsg(
         `+1  ${it.descripcion}${
           Number(it.bultos_esperados ?? 0) === 0 ? " (EXTRA)" : ""
-        }`
+        }`,
       );
       setTimeout(() => setScanMsg(null), 900);
       setQ("");
@@ -509,7 +578,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
                       onPress: () => navigation.navigate("FaltasYSobras"),
                     },
                     { text: "OK" },
-                  ]
+                  ],
                 );
               }
             } catch {
@@ -519,7 +588,7 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
             }
           },
         },
-      ]
+      ],
     );
   };
 
@@ -547,6 +616,26 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       ) : null}
 
       <View style={styles.searchWrap}>
+        <Pressable
+          style={{
+            paddingHorizontal: 10,
+            paddingVertical: 8,
+            borderRadius: 12,
+            backgroundColor: modoLote ? "#111" : "#eee",
+            borderWidth: 1,
+            borderColor: modoLote ? "#111" : "#d6d6d6",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          onPress={() => setModoLote((v) => !v)}
+        >
+          <Text
+            style={{ fontWeight: "800", color: modoLote ? "#fff" : "#111" }}
+          >
+            +
+          </Text>
+        </Pressable>
+
         <View style={styles.searchField}>
           <TextInput
             value={q}
@@ -585,6 +674,21 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       </View>
 
       {scanMsg ? <Text style={styles.scanMsg}>{scanMsg}</Text> : null}
+      {undoAction && (
+        <Pressable
+          onPress={async () => {
+            const a = undoAction;
+            const it = items.find((x) => x.id === a.itemId);
+            if (it) await incBulto(it, -a.inc);
+            setUndoAction(null);
+          }}
+          style={{ marginTop: 6, alignSelf: "flex-start" }}
+        >
+          <Text style={{ fontWeight: "800", textDecorationLine: "underline" }}>
+            Deshacer
+          </Text>
+        </Pressable>
+      )}
 
       <FlatList
         data={filtered}
@@ -661,6 +765,51 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
                 onPlus={() => setTempValue((v) => v + 1)}
               />
             </View>
+            {modalMode === "lote" && (
+              <View style={{ marginTop: 12 }}>
+                <TextInput
+                  value={String(tempValue ?? 0)}
+                  onChangeText={(t) => {
+                    const n = Number(String(t).replace(/\D/g, ""));
+                    const v = Number.isFinite(n) ? Math.max(0, n) : 0;
+                    setTempValue(v);
+                    if (rememberLote) setLoteQty(v);
+                  }}
+                  placeholder="Cantidad…"
+                  keyboardType="number-pad"
+                  style={{
+                    backgroundColor: "#fff",
+                    borderRadius: 12,
+                    paddingHorizontal: 12,
+                    paddingVertical: 10,
+                    borderWidth: 1,
+                    borderColor: "#e6e6e6",
+                    fontWeight: "800",
+                    textAlign: "center",
+                  }}
+                />
+
+                <Pressable
+                  onPress={() => {
+                    setRememberLote((v) => {
+                      const next = !v;
+                      if (next) setLoteQty(Math.max(1, Number(tempValue ?? 1)));
+                      return next;
+                    });
+                  }}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    marginTop: 10,
+                  }}
+                >
+                  <Text style={{ fontWeight: "800" }}>
+                    {rememberLote ? "☑" : "☐"} Recordar cantidad
+                  </Text>
+                </Pressable>
+              </View>
+            )}
 
             <View style={styles.modalActions}>
               <Pressable
@@ -674,7 +823,9 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
                 style={[styles.modalBtn, styles.modalBtnPrimary]}
                 onPress={saveStepper}
               >
-                <Text style={styles.modalBtnTextPrimary}>Guardar</Text>
+                <Text style={styles.modalBtnTextPrimary}>
+                  {modalMode === "lote" ? "Añadir" : "Guardar"}
+                </Text>
               </Pressable>
             </View>
           </View>
