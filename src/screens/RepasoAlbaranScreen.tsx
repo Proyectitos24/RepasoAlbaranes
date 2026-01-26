@@ -40,6 +40,10 @@ type Item = {
 };
 
 export default function RepasoAlbaranScreen({ route, navigation }: any) {
+  type FiltroIncidencia = "all" | "faltas" | "sobras";
+  const [filtro, setFiltro] = useState<FiltroIncidencia>("all");
+  const [filtroOpen, setFiltroOpen] = useState(false);
+
   // ✅ Lote
   const [modoLote, setModoLote] = useState(false);
   const [rememberLote, setRememberLote] = useState(false);
@@ -151,12 +155,26 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
 
   const filtered = useMemo(() => {
     const s = norm(q.trim());
-    if (!s) return items;
+    let list = !s
+      ? items
+      : items.filter(
+          (it) =>
+            norm(it.codigo).includes(s) ||
+            norm(it.descripcion ?? "").includes(s),
+        );
 
-    return items.filter(
-      (it) => norm(it.codigo).includes(s) || norm(it.descripcion).includes(s),
-    );
-  }, [q, items]);
+    if (filtro !== "all") {
+      list = list.filter((it) => {
+        const rev = Number(it.bultos_revisados ?? 0);
+        const esp = Number(it.bultos_esperados ?? 0);
+        if (filtro === "faltas") return rev < esp;
+        if (filtro === "sobras") return rev > esp;
+        return true;
+      });
+    }
+
+    return list;
+  }, [q, items, filtro]);
 
   const resumen = useMemo(() => {
     let esp = 0;
@@ -228,11 +246,15 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       [tempValue, selected.id],
     );
 
-    setItems((prev) =>
-      prev.map((x) =>
-        x.id === selected.id ? { ...x, bultos_revisados: tempValue } : x,
-      ),
-    );
+    setItems((prev) => {
+      const idx = prev.findIndex((x) => x.id === selected.id);
+      if (idx < 0) return prev;
+
+      const updated = { ...prev[idx], bultos_revisados: tempValue };
+      const rest = prev.filter((x) => x.id !== selected.id);
+
+      return [updated, ...rest]; // ✅ lo sube al inicio igual que el escaneo
+    });
 
     setOpen(false);
     setSelected(null);
@@ -599,12 +621,30 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
       <View style={styles.headerRow}>
         <Text style={styles.title}>Repaso</Text>
 
-        <View style={styles.pill}>
-          <Text style={styles.pillText}>
-            {resumen.rev}/{resumen.esp}
-            {resumen.faltan > 0 ? `  ·  Faltan ${resumen.faltan}` : ""}
-            {resumen.sobran > 0 ? `  ·  Sobran ${resumen.sobran}` : ""}
-          </Text>
+        <View style={styles.headerRight}>
+          <View style={styles.pill}>
+            <Text style={styles.pillText}>
+              {resumen.rev}/{resumen.esp}
+              {resumen.faltan > 0 ? `  ·  Faltan ${resumen.faltan}` : ""}
+              {resumen.sobran > 0 ? `  ·  Sobran ${resumen.sobran}` : ""}
+            </Text>
+          </View>
+
+          <Pressable
+            style={[
+              styles.filterBtn,
+              filtro !== "all" && styles.filterBtnOn,
+              isFinalizado && styles.btnDisabled,
+            ]}
+            disabled={isFinalizado}
+            onPress={() => setFiltroOpen(true)}
+          >
+            <MaterialCommunityIcons
+              name="filter-variant"
+              size={20}
+              color={filtro !== "all" ? "#fff" : "#111"}
+            />
+          </Pressable>
         </View>
       </View>
 
@@ -894,6 +934,48 @@ export default function RepasoAlbaranScreen({ route, navigation }: any) {
           <CameraView style={{ flex: 1 }} onBarcodeScanned={onBarcodeScanned} />
         </View>
       </Modal>
+      <Modal
+        transparent
+        visible={filtroOpen}
+        animationType="fade"
+        onRequestClose={() => setFiltroOpen(false)}
+      >
+        <Pressable style={styles.backdrop} onPress={() => setFiltroOpen(false)}>
+          <View style={styles.filterCard}>
+            <Text style={styles.filterTitle}>Filtrar</Text>
+
+            <Pressable
+              style={styles.filterRow}
+              onPress={() => setFiltro("all")}
+            >
+              <Text style={styles.filterRowText}>Todos</Text>
+              {filtro === "all" && (
+                <MaterialCommunityIcons name="check" size={22} color="#111" />
+              )}
+            </Pressable>
+
+            <Pressable
+              style={styles.filterRow}
+              onPress={() => setFiltro("faltas")}
+            >
+              <Text style={styles.filterRowText}>Faltas</Text>
+              {filtro === "faltas" && (
+                <MaterialCommunityIcons name="check" size={22} color="#111" />
+              )}
+            </Pressable>
+
+            <Pressable
+              style={styles.filterRow}
+              onPress={() => setFiltro("sobras")}
+            >
+              <Text style={styles.filterRowText}>Sobras</Text>
+              {filtro === "sobras" && (
+                <MaterialCommunityIcons name="check" size={22} color="#111" />
+              )}
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1023,6 +1105,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 6,
   },
+  headerRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
   pill: {
     backgroundColor: "#fff",
     borderWidth: 1,
@@ -1048,4 +1135,38 @@ const styles = StyleSheet.create({
     top: "50%",
     marginTop: -10,
   },
+  filterBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: "#eee",
+    borderWidth: 1,
+    borderColor: "#d6d6d6",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  filterBtnOn: {
+    backgroundColor: "#111",
+    borderColor: "#111",
+  },
+  filterCard: {
+    width: "100%",
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    padding: 14,
+  },
+  filterTitle: { fontSize: 16, fontWeight: "900", marginBottom: 8 },
+  filterOption: { paddingVertical: 12 },
+  filterOptionText: { fontWeight: "800", opacity: 0.8 },
+  filterOptionTextOn: { opacity: 1 },
+  filterRow: {
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+  paddingVertical: 14,
+  paddingHorizontal: 14,
+  borderTopWidth: 1,
+  borderTopColor: "#eee",
+},
+filterRowText: { fontSize: 16, fontWeight: "700", color: "#111" },
 });
